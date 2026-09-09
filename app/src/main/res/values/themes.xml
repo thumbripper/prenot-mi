@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.PrenotaSniper" parent="Theme.AppCompat.Light.NoActionBar">
+        <item name="colorPrimary">#0B3D91</item>
+        <item name="colorPrimaryDark">#082B66</item>
+        <item name="colorAccent">#1976D2</item>
+    </style>
+</resources>
