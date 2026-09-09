@@ -10,8 +10,10 @@ class Prefs(ctx: Context) {
         get() = sp.getString("serviceUrl", "https://prenotami.esteri.it/Services") ?: ""
         set(v) = sp.edit().putString("serviceUrl", v).apply()
 
+    // Start at the homepage, not /Login directly: hitting /Login cold returns an
+    // HTTP 500 (the server needs a session first). The homepage carries the login form.
     var loginUrl: String
-        get() = sp.getString("loginUrl", "https://prenotami.esteri.it/Login") ?: ""
+        get() = sp.getString("loginUrl", "https://prenotami.esteri.it/") ?: ""
         set(v) = sp.edit().putString("loginUrl", v).apply()
 
     /** Keyword matched against each service table row to find the right BOOK link. */

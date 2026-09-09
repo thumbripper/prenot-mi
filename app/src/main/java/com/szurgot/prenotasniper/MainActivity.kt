@@ -7,15 +7,21 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.content.Intent
 import android.net.Uri
+import android.net.http.SslError
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import android.util.Log
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.JsResult
+import android.webkit.SslErrorHandler
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Button
@@ -71,8 +77,13 @@ class MainActivity : AppCompatActivity() {
         requestNotifPermission()
         refreshNtp()
 
-        // First launch shows login; afterwards restore the services page (still logged in).
-        val start = if (savedInstanceState == null) prefs.loginUrl else prefs.serviceUrl
+        // Optional override for local testing: adb ... -e url file:///android_asset/mock/services.html
+        val override = intent?.getStringExtra("url")
+        val start = when {
+            override != null -> { prefs.serviceUrl = override; override }
+            savedInstanceState == null -> prefs.loginUrl
+            else -> prefs.serviceUrl
+        }
         web.loadUrl(start)
 
         setStatus("Ready. Log in once, set the service keyword in SETTINGS, then Arm or Snipe Now.")
@@ -81,6 +92,7 @@ class MainActivity : AppCompatActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        intent.getStringExtra("url")?.let { prefs.serviceUrl = it; web.loadUrl(it) }
     }
 
     override fun onResume() {
@@ -110,12 +122,15 @@ class MainActivity : AppCompatActivity() {
             databaseEnabled = true
             @Suppress("DEPRECATION")
             saveFormData = true
+            allowFileAccess = true
+            allowContentAccess = true
             userAgentString = userAgentString.replace("; wv", "")
         }
         web.addJavascriptInterface(Bridge(), "Android")
 
         web.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView?, url: String?) {
+                Logger.log(this@MainActivity, "PAGE LOADED: $url")
                 val u = url ?: return
                 if (!sniping) return
                 if (u.contains("/Services/Booking/")) {
@@ -123,6 +138,35 @@ class MainActivity : AppCompatActivity() {
                 } else if (u.contains("/Services", ignoreCase = true)) {
                     injectClick()
                 }
+            }
+
+            override fun onReceivedError(
+                view: WebView?, request: WebResourceRequest?, error: WebResourceError?
+            ) {
+                if (request?.isForMainFrame == true) {
+                    val msg = "LOAD ERROR ${error?.errorCode} '${error?.description}' url=${request.url}"
+                    Log.e("PrenotaSniper", msg)
+                    Logger.log(this@MainActivity, msg)
+                    ui.post { setStatus("Load failed: ${error?.description} (${request.url})") }
+                }
+            }
+
+            override fun onReceivedHttpError(
+                view: WebView?, request: WebResourceRequest?, errorResponse: WebResourceResponse?
+            ) {
+                if (request?.isForMainFrame == true) {
+                    Logger.log(
+                        this@MainActivity,
+                        "HTTP ERROR ${errorResponse?.statusCode} url=${request.url}"
+                    )
+                }
+            }
+
+            override fun onReceivedSslError(
+                view: WebView?, handler: SslErrorHandler?, error: SslError?
+            ) {
+                Logger.log(this@MainActivity, "SSL ERROR $error")
+                handler?.cancel()
             }
         }
 
@@ -134,6 +178,11 @@ class MainActivity : AppCompatActivity() {
                 if (sniping && (m.contains("sold out") || m.contains("high demand") || m.contains("esaurit"))) {
                     ui.post { onResult("SOLD_OUT") }
                 }
+                return true
+            }
+
+            override fun onConsoleMessage(cm: android.webkit.ConsoleMessage?): Boolean {
+                cm?.let { Logger.log(this@MainActivity, "JS CONSOLE: ${it.message()} @${it.lineNumber()}") }
                 return true
             }
         }
@@ -350,17 +399,23 @@ class MainActivity : AppCompatActivity() {
               }
             }
             if(!target){ Android.onResult('NO_SERVICE'); return; }
+            // Count trigger-phrase occurrences BEFORE clicking so we detect the
+            // sold-out modal APPEARING, not static page text that already has the word.
+            function cnt(s){var subs=['esaurit','sold out','high demand'];var n=0;
+              for(var q=0;q<subs.length;q++){var i=0;while((i=s.indexOf(subs[q],i))>=0){n++;i+=subs[q].length;}}return n;}
+            var baseSold=cnt(((document.body?document.body.innerText:'')+'').toLowerCase());
             target.click();
             var tries=0;
             var iv=setInterval(function(){
               tries++;
-              var body=((document.body?document.body.innerText:'')+'').toLowerCase();
-              if(body.indexOf('sold out')>=0||body.indexOf('high demand')>=0||body.indexOf('esaurit')>=0){
-                clearInterval(iv); Android.onResult('SOLD_OUT'); return;
-              }
+              var cur=((document.body?document.body.innerText:'')+'').toLowerCase();
+              // Navigation to a booking page is the strongest success signal.
               if(location.href.indexOf('/Services/Booking/')>=0){ clearInterval(iv); Android.onResult('SUCCESS'); return; }
+              // Sold-out modal appeared (more trigger words than before the click).
+              if(cnt(cur)>baseSold){ clearInterval(iv); Android.onResult('SOLD_OUT'); return; }
+              // A calendar/date picker became VISIBLE in-place (offsetParent!==null).
               var cal=document.querySelector('.ui-datepicker-calendar,#calendar,.calendar,input[type=date],select[name*=hour],select[name*=ora]');
-              if(cal){ clearInterval(iv); Android.onResult('SUCCESS'); return; }
+              if(cal && cal.offsetParent!==null){ clearInterval(iv); Android.onResult('SUCCESS'); return; }
               if(tries>50){ clearInterval(iv); Android.onResult('TIMEOUT'); }
             },100);
           }catch(e){ Android.onResult('ERR:'+e); }

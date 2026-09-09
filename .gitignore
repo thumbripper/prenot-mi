@@ -18,6 +18,10 @@ captures/
 .DS_Store
 Thumbs.db
 
+# local test artifacts (emulator screenshots / UI dumps)
+/*.png
+/ui.xml
+
 # Keystores / secrets
 *.jks
 *.keystore

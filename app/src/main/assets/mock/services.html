@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prenotami MOCK — Servizi</title>
+<style>
+  body { font-family: sans-serif; background:#e9e9e9; margin:0; padding:16px; }
+  h2 { text-align:center; }
+  table { width:100%; border-collapse:collapse; background:#fff; }
+  th,td { padding:10px; border-bottom:1px solid #ddd; font-size:14px; text-align:left; }
+  .book { display:inline-block; background:#0b57a4; color:#fff; padding:8px 18px;
+          text-decoration:none; border-radius:3px; font-weight:bold; }
+  #modal { display:none; position:fixed; top:20%; left:50%; transform:translateX(-50%);
+           width:80%; max-width:520px; background:#fff; border-top:6px solid #2aa3d4;
+           box-shadow:0 4px 24px rgba(0,0,0,.4); padding:22px; }
+  #modal button.confirm { background:#3aa0dd; color:#fff; border:0; padding:10px 26px;
+           border-radius:4px; float:right; font-size:15px; }
+  #cal { display:none; margin-top:20px; padding:16px; background:#fff; }
+</style>
+</head>
+<body>
+  <h2>Servizi erogati dalla sede — (MOCK)</h2>
+  <p>Scegli il servizio che vuoi prenotare e premi "Prenota".</p>
+  <table>
+    <tr><th>Categoria</th><th>Servizio</th><th>Prenotazione</th></tr>
+    <tr>
+      <td>CITTADINANZA</td>
+      <td>Cittadinanza per discendenza (esaurito)</td>
+      <td><a class="book" href="/Services/Booking/102" onclick="showSold();return false;">Prenota</a></td>
+    </tr>
+    <tr>
+      <td>CITTADINANZA</td>
+      <td>Cittadinanza TEST — posti disponibili</td>
+      <td><a class="book" href="/Services/Booking/101" onclick="showCal();return false;">Prenota</a></td>
+    </tr>
+    <tr>
+      <td>STATO CIVILE</td>
+      <td>Pubblicazioni di matrimonio</td>
+      <td><a class="book" href="/Services/Booking/200" onclick="showSold();return false;">Prenota</a></td>
+    </tr>
+  </table>
+
+  <div id="modal">
+    <p>Vista l'elevata richiesta, i posti disponibili per il servizio scelto sono esauriti.</p>
+    <button class="confirm" onclick="document.getElementById('modal').style.display='none'">OK</button>
+  </div>
+
+  <div id="cal">
+    <h3>Prenotazione — scegli data e ora</h3>
+    <input type="date" id="thedate">
+    <select name="hour"><option>09:00</option><option>10:00</option></select>
+  </div>
+
+<script>
+  function showSold(){ document.getElementById('modal').style.display='block'; }
+  function showCal(){ document.getElementById('cal').style.display='block'; }
+</script>
+</body>
+</html>
