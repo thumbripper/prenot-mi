@@ -49,11 +49,19 @@ class MainActivity : AppCompatActivity() {
     private var sniping = false
     private var attempt = 0
     private var resultHandled = false
+    private var awaitingLoadThenAttempt = false
+    private var consecutiveBook = 0
+    private var pollTick = 0
 
     private var countdownRunnable: Runnable? = null
     private var fireRunnable: Runnable? = null
 
     private val fmt = DateTimeFormatter.ofPattern("EEE dd MMM HH:mm:ss")
+
+    // Outcome-polling cadence after a click.
+    private val POLL_INTERVAL_MS = 150L
+    private val POLL_MAX_TICKS = 45          // ~6.75s total before treating as inconclusive
+    private val BOOK_SETTLE_TICKS = 20       // staying on the booking page this long (~3s) = real slot
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -133,10 +141,12 @@ class MainActivity : AppCompatActivity() {
                 Logger.log(this@MainActivity, "PAGE LOADED: $url")
                 val u = url ?: return
                 if (!sniping) return
-                if (u.contains("/Services/Booking/")) {
-                    onResult("SUCCESS")
-                } else if (u.contains("/Services", ignoreCase = true)) {
-                    injectClick()
+                // Only kick off the first attempt once the services list has loaded.
+                // (Do NOT treat reaching /Services/Booking/ as success — sold-out lands
+                //  there too, briefly, before bouncing back and showing the modal.)
+                if (awaitingLoadThenAttempt && u.contains("/Services", ignoreCase = true) && !u.contains("/Booking/")) {
+                    awaitingLoadThenAttempt = false
+                    doAttempt()
                 }
             }
 
@@ -176,7 +186,7 @@ class MainActivity : AppCompatActivity() {
                 Logger.log(this@MainActivity, "JS ALERT: $message")
                 result?.confirm()
                 if (sniping && (m.contains("sold out") || m.contains("high demand") || m.contains("esaurit"))) {
-                    ui.post { onResult("SOLD_OUT") }
+                    ui.post { handleOutcome("SOLD_OUT") }
                 }
                 return true
             }
@@ -191,7 +201,7 @@ class MainActivity : AppCompatActivity() {
     inner class Bridge {
         @JavascriptInterface
         fun onResult(status: String) {
-            ui.post { this@MainActivity.onResult(status) }
+            ui.post { handleOutcome(status) }
         }
 
         @JavascriptInterface
@@ -212,62 +222,89 @@ class MainActivity : AppCompatActivity() {
         cancelCountdown()
         sniping = true
         attempt = 0
-        Logger.log(this, "SNIPE START (${if (manual) "manual" else "scheduled"}) keyword='${prefs.keyword}'")
+        val target = if (prefs.bookingId.isNotEmpty()) prefs.bookingId else prefs.keyword
+        Logger.log(this, "SNIPE START (${if (manual) "manual" else "scheduled"}) target='$target'")
         setStatus("Sniping… attempt 0/${prefs.retries}")
         val current = web.url ?: ""
         if (current.contains("/Services", ignoreCase = true) && !current.contains("/Booking/")) {
-            injectClick()
+            doAttempt()
         } else {
-            web.loadUrl(prefs.serviceUrl) // onPageFinished -> injectClick()
+            awaitingLoadThenAttempt = true
+            web.loadUrl(prefs.serviceUrl) // onPageFinished -> doAttempt()
         }
     }
 
     private fun stopSnipe(msg: String) {
         sniping = false
+        awaitingLoadThenAttempt = false
+        ui.removeCallbacks(pollRunnable)
         cancelCountdown()
         Logger.log(this, "SNIPE STOP: $msg")
         setStatus(msg)
     }
 
-    private fun injectClick() {
+    /** One attempt: click the target's Prenota, then poll the outcome from Kotlin. */
+    private fun doAttempt() {
         if (!sniping) return
         resultHandled = false
+        consecutiveBook = 0
+        pollTick = 0
         attempt++
         setStatus("Sniping… attempt $attempt/${prefs.retries}")
         val kw = prefs.keyword.replace("\"", "").replace("\\", "")
         val id = prefs.bookingId.replace("\"", "").replace("\\", "")
         web.evaluateJavascript(clickJs(kw, id), null)
+        ui.postDelayed(pollRunnable, 250)
     }
 
-    private fun onResult(res: String) {
-        if (!sniping || resultHandled) return
-        resultHandled = true
-        Logger.log(this, "attempt $attempt -> $res")
-        Logger.screenshot(this, web, "a${attempt}_${res.take(12)}")
-
-        when {
-            res == "SUCCESS" -> handleSuccess()
-            res == "NO_SERVICE" -> {
-                if (attempt <= 1) {
-                    web.loadUrl(prefs.serviceUrl) // maybe not loaded yet; retry via onPageFinished
-                } else {
-                    stopSnipe("Service not found. Check the keyword in SETTINGS (long-press SETTINGS to dump the page).")
+    /**
+     * Polls the page after a click. Sold-out shows the "esauriti/elevata richiesta"
+     * modal and bounces back off /Services/Booking/; an available service STAYS on
+     * the booking page (optionally with a calendar). So: modal -> SOLD_OUT; staying
+     * on the booking page -> SUCCESS.
+     */
+    private val pollRunnable = object : Runnable {
+        override fun run() {
+            if (!sniping || resultHandled) return
+            pollTick++
+            if (pollTick >= POLL_MAX_TICKS) { handleOutcome("SOLD_OUT"); return } // inconclusive -> retry
+            // The JS callback can be dropped during a navigation, so we reschedule the
+            // tick unconditionally below rather than from inside the callback.
+            web.evaluateJavascript(STATE_JS) { raw ->
+                if (!sniping || resultHandled) return@evaluateJavascript
+                when (raw?.trim('"')) {
+                    "SOLD" -> handleOutcome("SOLD_OUT")
+                    "SUCCESS" -> handleOutcome("SUCCESS")
+                    "BOOK" -> { consecutiveBook++; if (consecutiveBook >= BOOK_SETTLE_TICKS) handleOutcome("SUCCESS") }
+                    else -> consecutiveBook = 0 // WAIT / mid-navigation / bounced to list
                 }
             }
-            else -> { // SOLD_OUT / TIMEOUT / ERR
-                if (attempt < prefs.retries) {
-                    ui.postDelayed({ injectClick() }, prefs.retryIntervalMs.toLong())
-                } else {
-                    stopSnipe("No slot after ${prefs.retries} attempts (last: $res). Logged as evidence.")
-                }
+            ui.postDelayed(this, POLL_INTERVAL_MS)
+        }
+    }
+
+    /** Central outcome handler; also reachable from the JS bridge (native alert / NO_SERVICE). */
+    private fun handleOutcome(res: String) {
+        if (!sniping || resultHandled) return
+        resultHandled = true
+        ui.removeCallbacks(pollRunnable)
+        Logger.log(this, "attempt $attempt -> $res")
+        Logger.screenshot(this, web, "a${attempt}_${res.take(12)}")
+        when (res) {
+            "SUCCESS" -> handleSuccess()
+            "NO_SERVICE" -> stopSnipe("Service not found. Long-press SNIPE to pick the service, or set the keyword in SETTINGS.")
+            else -> { // SOLD_OUT / ERR / inconclusive
+                if (attempt < prefs.retries) ui.postDelayed({ doAttempt() }, prefs.retryIntervalMs.toLong())
+                else stopSnipe("No slot after ${prefs.retries} attempts (last: $res). Logged as evidence.")
             }
         }
     }
 
     private fun handleSuccess() {
         sniping = false
+        ui.removeCallbacks(pollRunnable)
         cancelCountdown()
-        Logger.log(this, "*** SUCCESS — a bookable page loaded. Handing over. ***")
+        Logger.log(this, "*** SUCCESS — bookable page stayed open. Handing over. ***")
         Logger.screenshot(this, web, "SUCCESS")
         setStatus("★ SLOT AVAILABLE — TAKE OVER NOW: pick day/time, then enter the OTP. ★")
         val v = ContextCompat.getSystemService(this, android.os.Vibrator::class.java)
@@ -367,7 +404,9 @@ class MainActivity : AppCompatActivity() {
     private fun clickJs(keyword: String, bookingId: String): String = """
         (function(){
           try{
-            var conf=document.querySelector('.sweet-alert button.confirm, .swal2-confirm, .confirm');
+            // Dismiss any leftover sold-out modal from a previous attempt.
+            var conf=document.querySelector('.sweet-alert button.confirm,.swal2-confirm,.confirm,.sa-button-container button');
+            if(!conf){ var bs=document.querySelectorAll('button'); for(var b=0;b<bs.length;b++){ if((bs[b].innerText||'').trim().toLowerCase()==='ok'){ conf=bs[b]; break; } } }
             if(conf){ try{conf.click();}catch(e){} }
             var idsub="$bookingId";
             var kw="$keyword".toLowerCase();
@@ -399,26 +438,31 @@ class MainActivity : AppCompatActivity() {
               }
             }
             if(!target){ Android.onResult('NO_SERVICE'); return; }
-            // Count trigger-phrase occurrences BEFORE clicking so we detect the
-            // sold-out modal APPEARING, not static page text that already has the word.
-            function cnt(s){var subs=['esaurit','sold out','high demand'];var n=0;
-              for(var q=0;q<subs.length;q++){var i=0;while((i=s.indexOf(subs[q],i))>=0){n++;i+=subs[q].length;}}return n;}
-            var baseSold=cnt(((document.body?document.body.innerText:'')+'').toLowerCase());
-            target.click();
-            var tries=0;
-            var iv=setInterval(function(){
-              tries++;
-              var cur=((document.body?document.body.innerText:'')+'').toLowerCase();
-              // Navigation to a booking page is the strongest success signal.
-              if(location.href.indexOf('/Services/Booking/')>=0){ clearInterval(iv); Android.onResult('SUCCESS'); return; }
-              // Sold-out modal appeared (more trigger words than before the click).
-              if(cnt(cur)>baseSold){ clearInterval(iv); Android.onResult('SOLD_OUT'); return; }
-              // A calendar/date picker became VISIBLE in-place (offsetParent!==null).
-              var cal=document.querySelector('.ui-datepicker-calendar,#calendar,.calendar,input[type=date],select[name*=hour],select[name*=ora]');
-              if(cal && cal.offsetParent!==null){ clearInterval(iv); Android.onResult('SUCCESS'); return; }
-              if(tries>50){ clearInterval(iv); Android.onResult('TIMEOUT'); }
-            },100);
+            target.click();  // outcome is polled from Kotlin via STATE_JS
           }catch(e){ Android.onResult('ERR:'+e); }
+        })();
+    """.trimIndent()
+
+    /**
+     * Evaluated repeatedly after a click. Returns one of:
+     *  SOLD    - the sold-out modal / message is present
+     *  SUCCESS - a visible calendar/date-picker is showing on a booking page
+     *  BOOK    - on a /Services/Booking/ page, no modal yet (may settle into SUCCESS)
+     *  WAIT    - anything else (mid-navigation, bounced back to the list)
+     */
+    private val STATE_JS: String = """
+        (function(){
+          try{
+            var body=((document.body?document.body.innerText:'')+'').toLowerCase();
+            if(body.indexOf('esaurit')>=0||body.indexOf('elevata richiesta')>=0||
+               body.indexOf('sold out')>=0||body.indexOf('high demand')>=0){ return 'SOLD'; }
+            if(location.href.indexOf('/Services/Booking/')>=0){
+              var cal=document.querySelector('.ui-datepicker-calendar,#calendar,.calendar,.datepicker,td.day,input[type=date],select[name*=ora],select[name*=hour]');
+              if(cal && cal.offsetParent!==null){ return 'SUCCESS'; }
+              return 'BOOK';
+            }
+            return 'WAIT';
+          }catch(e){ return 'WAIT'; }
         })();
     """.trimIndent()
 

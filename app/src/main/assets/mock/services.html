@@ -16,7 +16,6 @@
            box-shadow:0 4px 24px rgba(0,0,0,.4); padding:22px; }
   #modal button.confirm { background:#3aa0dd; color:#fff; border:0; padding:10px 26px;
            border-radius:4px; float:right; font-size:15px; }
-  #cal { display:none; margin-top:20px; padding:16px; background:#fff; }
 </style>
 </head>
 <body>
@@ -26,13 +25,13 @@
     <tr><th>Categoria</th><th>Servizio</th><th>Prenotazione</th></tr>
     <tr>
       <td>CITTADINANZA</td>
-      <td>Cittadinanza per discendenza (esaurito)</td>
+      <td>Cittadinanza per discendenza (non disp.)</td>
       <td><a class="book" href="/Services/Booking/102" onclick="showSold();return false;">Prenota</a></td>
     </tr>
     <tr>
       <td>CITTADINANZA</td>
-      <td>Cittadinanza TEST — posti disponibili</td>
-      <td><a class="book" href="/Services/Booking/101" onclick="showCal();return false;">Prenota</a></td>
+      <td>Cittadinanza TEST — posti liberi</td>
+      <td><a class="book" href="/Services/Booking/101" onclick="location.href='Services/Booking/101.html';return false;">Prenota</a></td>
     </tr>
     <tr>
       <td>STATO CIVILE</td>
@@ -41,20 +40,14 @@
     </tr>
   </table>
 
+  <!-- Sold-out modal, mimicking the real prenotami wording -->
   <div id="modal">
-    <p>Vista l'elevata richiesta, i posti disponibili per il servizio scelto sono esauriti.</p>
+    <p>Stante l'elevata richiesta i posti disponibili per il servizio scelto sono esauriti.</p>
     <button class="confirm" onclick="document.getElementById('modal').style.display='none'">OK</button>
-  </div>
-
-  <div id="cal">
-    <h3>Prenotazione — scegli data e ora</h3>
-    <input type="date" id="thedate">
-    <select name="hour"><option>09:00</option><option>10:00</option></select>
   </div>
 
 <script>
   function showSold(){ document.getElementById('modal').style.display='block'; }
-  function showCal(){ document.getElementById('cal').style.display='block'; }
 </script>
 </body>
 </html>
