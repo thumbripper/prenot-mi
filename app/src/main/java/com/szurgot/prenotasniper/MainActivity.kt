@@ -27,6 +27,7 @@ import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -40,18 +41,17 @@ import kotlin.concurrent.thread
 
 class MainActivity : AppCompatActivity() {
 
-    private lateinit var web: WebView
+    private lateinit var container: FrameLayout
     private lateinit var status: TextView
     private lateinit var prefs: Prefs
     private val ui = Handler(Looper.getMainLooper())
 
+    private val sessions = mutableListOf<SnipeSession>()
+    private val primary: WebView get() = sessions[0].web
+
     @Volatile private var ntpOffsetMs: Long = 0
     private var sniping = false
-    private var attempt = 0
-    private var resultHandled = false
-    private var awaitingLoadThenAttempt = false
-    private var consecutiveBook = 0
-    private var pollTick = 0
+    private var wave = 0
 
     private var countdownRunnable: Runnable? = null
     private var fireRunnable: Runnable? = null
@@ -63,6 +63,44 @@ class MainActivity : AppCompatActivity() {
     private val POLL_MAX_TICKS = 45          // ~6.75s total before treating as inconclusive
     private val BOOK_SETTLE_TICKS = 20       // staying on the booking page this long (~3s) = real slot
 
+    /** One concurrent booking session: a WebView plus its own poll/attempt state. */
+    inner class SnipeSession(val web: WebView, val index: Int) {
+        var resultHandled = false
+        var consecutiveBook = 0
+        var pollTick = 0
+        var awaitingLoad = false
+        var done = false
+        var lastRes = ""
+
+        val poll = object : Runnable {
+            override fun run() {
+                if (!sniping || resultHandled) return
+                pollTick++
+                if (pollTick >= POLL_MAX_TICKS) { sessionOutcome(this@SnipeSession, "SOLD_OUT"); return }
+                web.evaluateJavascript(STATE_JS) { raw ->
+                    if (!sniping || resultHandled) return@evaluateJavascript
+                    when (raw?.trim('"')) {
+                        "SOLD" -> sessionOutcome(this@SnipeSession, "SOLD_OUT")
+                        "SUCCESS" -> sessionOutcome(this@SnipeSession, "SUCCESS")
+                        "BOOK" -> { consecutiveBook++; if (consecutiveBook >= BOOK_SETTLE_TICKS) sessionOutcome(this@SnipeSession, "SUCCESS") }
+                        else -> consecutiveBook = 0
+                    }
+                }
+                ui.postDelayed(this, POLL_INTERVAL_MS)
+            }
+        }
+
+        fun attempt() {
+            resultHandled = false; consecutiveBook = 0; pollTick = 0; done = false
+            val kw = prefs.keyword.replace("\"", "").replace("\\", "")
+            val id = prefs.bookingId.replace("\"", "").replace("\\", "")
+            web.evaluateJavascript(clickJs(kw, id), null)
+            ui.postDelayed(poll, 250)
+        }
+
+        fun stopPoll() = ui.removeCallbacks(poll)
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -70,14 +108,26 @@ class MainActivity : AppCompatActivity() {
         prefs = Prefs(this)
 
         status = findViewById(R.id.txtStatus)
-        web = findViewById(R.id.webview)
+        container = findViewById(R.id.webContainer)
 
-        setupWebView()
+        CookieManager.getInstance().setAcceptCookie(true)
+        val n = prefs.parallelSessions
+        for (i in 0 until n) {
+            val w = WebView(this)
+            w.layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
+            )
+            container.addView(w)
+            val s = SnipeSession(w, i)
+            sessions.add(s)
+            setupWebView(s)
+        }
+        primary.bringToFront() // primary on top for login / navigation / handover
 
         findViewById<Button>(R.id.btnSnipe).setOnClickListener { startSnipe(manual = true) }
         findViewById<Button>(R.id.btnSnipe).setOnLongClickListener { enumerateServices(); true }
         findViewById<Button>(R.id.btnStop).setOnClickListener { stopSnipe("Stopped by user.") }
-        findViewById<Button>(R.id.btnHome).setOnClickListener { web.loadUrl(prefs.loginUrl) }
+        findViewById<Button>(R.id.btnHome).setOnClickListener { primary.loadUrl(prefs.loginUrl); primary.bringToFront() }
         findViewById<Button>(R.id.btnSettings).setOnClickListener { showSettings() }
         findViewById<Button>(R.id.btnSettings).setOnLongClickListener { dumpPage(); true }
         status.setOnLongClickListener { showDiagnostics(); true }
@@ -92,22 +142,22 @@ class MainActivity : AppCompatActivity() {
             savedInstanceState == null -> prefs.loginUrl
             else -> prefs.serviceUrl
         }
-        web.loadUrl(start)
+        primary.loadUrl(start)
 
-        setStatus("Ready. Log in once, set the service keyword in SETTINGS, then Arm or Snipe Now.")
+        setStatus("Ready (${sessions.size} sessions). Log in once, pick the service (long-press SNIPE), then Arm or Snipe Now.")
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        intent.getStringExtra("url")?.let { prefs.serviceUrl = it; web.loadUrl(it) }
+        intent.getStringExtra("url")?.let { prefs.serviceUrl = it; primary.loadUrl(it) }
     }
 
     override fun onResume() {
         super.onResume()
         if (intent?.getBooleanExtra("autostart", false) == true) {
             intent.removeExtra("autostart")
-            web.loadUrl(prefs.serviceUrl)
+            primary.loadUrl(prefs.serviceUrl)
         }
         maybeStartCountdown()
     }
@@ -119,11 +169,9 @@ class MainActivity : AppCompatActivity() {
 
     // ---------------------------------------------------------------- WebView
 
-    private fun setupWebView() {
-        CookieManager.getInstance().apply {
-            setAcceptCookie(true)
-            setAcceptThirdPartyCookies(web, true)
-        }
+    private fun setupWebView(s: SnipeSession) {
+        val web = s.web
+        CookieManager.getInstance().setAcceptThirdPartyCookies(web, true)
         web.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
@@ -134,48 +182,36 @@ class MainActivity : AppCompatActivity() {
             allowContentAccess = true
             userAgentString = userAgentString.replace("; wv", "")
         }
-        web.addJavascriptInterface(Bridge(), "Android")
+        web.addJavascriptInterface(Bridge(s), "Android")
 
         web.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView?, url: String?) {
-                Logger.log(this@MainActivity, "PAGE LOADED: $url")
                 val u = url ?: return
+                Logger.log(this@MainActivity, "PAGE LOADED[${s.index}]: $u")
                 if (!sniping) return
-                // Only kick off the first attempt once the services list has loaded.
-                // (Do NOT treat reaching /Services/Booking/ as success — sold-out lands
-                //  there too, briefly, before bouncing back and showing the modal.)
-                if (awaitingLoadThenAttempt && u.contains("/Services", ignoreCase = true) && !u.contains("/Booking/")) {
-                    awaitingLoadThenAttempt = false
-                    doAttempt()
+                if (s.awaitingLoad && u.contains("/Services", ignoreCase = true) && !u.contains("/Booking/")) {
+                    s.awaitingLoad = false
+                    s.attempt()
                 }
             }
 
-            override fun onReceivedError(
-                view: WebView?, request: WebResourceRequest?, error: WebResourceError?
-            ) {
+            override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
                 if (request?.isForMainFrame == true) {
-                    val msg = "LOAD ERROR ${error?.errorCode} '${error?.description}' url=${request.url}"
+                    val msg = "LOAD ERROR[${s.index}] ${error?.errorCode} '${error?.description}' url=${request.url}"
                     Log.e("PrenotaSniper", msg)
                     Logger.log(this@MainActivity, msg)
-                    ui.post { setStatus("Load failed: ${error?.description} (${request.url})") }
+                    if (s.index == 0) ui.post { setStatus("Load failed: ${error?.description} (${request.url})") }
                 }
             }
 
-            override fun onReceivedHttpError(
-                view: WebView?, request: WebResourceRequest?, errorResponse: WebResourceResponse?
-            ) {
+            override fun onReceivedHttpError(view: WebView?, request: WebResourceRequest?, errorResponse: WebResourceResponse?) {
                 if (request?.isForMainFrame == true) {
-                    Logger.log(
-                        this@MainActivity,
-                        "HTTP ERROR ${errorResponse?.statusCode} url=${request.url}"
-                    )
+                    Logger.log(this@MainActivity, "HTTP ERROR[${s.index}] ${errorResponse?.statusCode} url=${request.url}")
                 }
             }
 
-            override fun onReceivedSslError(
-                view: WebView?, handler: SslErrorHandler?, error: SslError?
-            ) {
-                Logger.log(this@MainActivity, "SSL ERROR $error")
+            override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: SslError?) {
+                Logger.log(this@MainActivity, "SSL ERROR[${s.index}] $error")
                 handler?.cancel()
             }
         }
@@ -183,25 +219,26 @@ class MainActivity : AppCompatActivity() {
         web.webChromeClient = object : WebChromeClient() {
             override fun onJsAlert(view: WebView?, url: String?, message: String?, result: JsResult?): Boolean {
                 val m = (message ?: "").lowercase()
-                Logger.log(this@MainActivity, "JS ALERT: $message")
+                Logger.log(this@MainActivity, "JS ALERT[${s.index}]: $message")
                 result?.confirm()
                 if (sniping && (m.contains("sold out") || m.contains("high demand") || m.contains("esaurit"))) {
-                    ui.post { handleOutcome("SOLD_OUT") }
+                    ui.post { sessionOutcome(s, "SOLD_OUT") }
                 }
                 return true
             }
 
             override fun onConsoleMessage(cm: android.webkit.ConsoleMessage?): Boolean {
-                cm?.let { Logger.log(this@MainActivity, "JS CONSOLE: ${it.message()} @${it.lineNumber()}") }
+                if (s.index == 0) cm?.let { Logger.log(this@MainActivity, "JS CONSOLE: ${it.message()} @${it.lineNumber()}") }
                 return true
             }
         }
     }
 
-    inner class Bridge {
+    inner class Bridge(private val session: SnipeSession?) {
         @JavascriptInterface
         fun onResult(status: String) {
-            ui.post { handleOutcome(status) }
+            val s = session ?: return
+            ui.post { sessionOutcome(s, status) }
         }
 
         @JavascriptInterface
@@ -216,97 +253,75 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ---------------------------------------------------------------- Snipe
+    // ---------------------------------------------------------------- Snipe (fan-out)
 
     private fun startSnipe(manual: Boolean) {
         cancelCountdown()
         sniping = true
-        attempt = 0
+        wave = 0
         val target = if (prefs.bookingId.isNotEmpty()) prefs.bookingId else prefs.keyword
-        Logger.log(this, "SNIPE START (${if (manual) "manual" else "scheduled"}) target='$target'")
-        setStatus("Sniping… attempt 0/${prefs.retries}")
-        val current = web.url ?: ""
-        if (current.contains("/Services", ignoreCase = true) && !current.contains("/Booking/")) {
-            doAttempt()
-        } else {
-            awaitingLoadThenAttempt = true
-            web.loadUrl(prefs.serviceUrl) // onPageFinished -> doAttempt()
-        }
+        Logger.log(this, "SNIPE START (${if (manual) "manual" else "scheduled"}) target='$target' sessions=${sessions.size}")
+        fireWave()
     }
 
     private fun stopSnipe(msg: String) {
         sniping = false
-        awaitingLoadThenAttempt = false
-        ui.removeCallbacks(pollRunnable)
+        sessions.forEach { it.stopPoll(); it.resultHandled = true }
         cancelCountdown()
         Logger.log(this, "SNIPE STOP: $msg")
         setStatus(msg)
     }
 
-    /** One attempt: click the target's Prenota, then poll the outcome from Kotlin. */
-    private fun doAttempt() {
+    /** Fire one wave: every session clicks the target at (near) the same instant. */
+    private fun fireWave() {
         if (!sniping) return
-        resultHandled = false
-        consecutiveBook = 0
-        pollTick = 0
-        attempt++
-        setStatus("Sniping… attempt $attempt/${prefs.retries}")
-        val kw = prefs.keyword.replace("\"", "").replace("\\", "")
-        val id = prefs.bookingId.replace("\"", "").replace("\\", "")
-        web.evaluateJavascript(clickJs(kw, id), null)
-        ui.postDelayed(pollRunnable, 250)
-    }
-
-    /**
-     * Polls the page after a click. Sold-out shows the "esauriti/elevata richiesta"
-     * modal and bounces back off /Services/Booking/; an available service STAYS on
-     * the booking page (optionally with a calendar). So: modal -> SOLD_OUT; staying
-     * on the booking page -> SUCCESS.
-     */
-    private val pollRunnable = object : Runnable {
-        override fun run() {
-            if (!sniping || resultHandled) return
-            pollTick++
-            if (pollTick >= POLL_MAX_TICKS) { handleOutcome("SOLD_OUT"); return } // inconclusive -> retry
-            // The JS callback can be dropped during a navigation, so we reschedule the
-            // tick unconditionally below rather than from inside the callback.
-            web.evaluateJavascript(STATE_JS) { raw ->
-                if (!sniping || resultHandled) return@evaluateJavascript
-                when (raw?.trim('"')) {
-                    "SOLD" -> handleOutcome("SOLD_OUT")
-                    "SUCCESS" -> handleOutcome("SUCCESS")
-                    "BOOK" -> { consecutiveBook++; if (consecutiveBook >= BOOK_SETTLE_TICKS) handleOutcome("SUCCESS") }
-                    else -> consecutiveBook = 0 // WAIT / mid-navigation / bounced to list
-                }
-            }
-            ui.postDelayed(this, POLL_INTERVAL_MS)
-        }
-    }
-
-    /** Central outcome handler; also reachable from the JS bridge (native alert / NO_SERVICE). */
-    private fun handleOutcome(res: String) {
-        if (!sniping || resultHandled) return
-        resultHandled = true
-        ui.removeCallbacks(pollRunnable)
-        Logger.log(this, "attempt $attempt -> $res")
-        Logger.screenshot(this, web, "a${attempt}_${res.take(12)}")
-        when (res) {
-            "SUCCESS" -> handleSuccess()
-            "NO_SERVICE" -> stopSnipe("Service not found. Long-press SNIPE to pick the service, or set the keyword in SETTINGS.")
-            else -> { // SOLD_OUT / ERR / inconclusive
-                if (attempt < prefs.retries) ui.postDelayed({ doAttempt() }, prefs.retryIntervalMs.toLong())
-                else stopSnipe("No slot after ${prefs.retries} attempts (last: $res). Logged as evidence.")
+        wave++
+        setStatus("Sniping… wave $wave/${prefs.retries} × ${sessions.size} sessions")
+        sessions.forEach { s ->
+            s.done = false
+            s.resultHandled = false
+            val cur = s.web.url ?: ""
+            if (cur.contains("/Services", ignoreCase = true) && !cur.contains("/Booking/")) {
+                s.attempt()
+            } else {
+                s.awaitingLoad = true
+                s.web.loadUrl(prefs.serviceUrl) // onPageFinished(services) -> s.attempt()
             }
         }
     }
 
-    private fun handleSuccess() {
+    /** Per-session result within a wave; first SUCCESS wins, otherwise wait for the wave to finish. */
+    private fun sessionOutcome(s: SnipeSession, res: String) {
+        if (!sniping || s.resultHandled) return
+        s.resultHandled = true
+        s.stopPoll()
+        s.lastRes = res
+        Logger.log(this, "wave $wave session ${s.index} -> $res")
+
+        if (res == "SUCCESS") { winSession(s); return }
+
+        s.done = true
+        if (sessions.all { it.done }) {
+            Logger.screenshot(this, primary, "wave${wave}_${res.take(8)}")
+            when {
+                sessions.all { it.lastRes == "NO_SERVICE" } ->
+                    stopSnipe("Service not found. Long-press SNIPE to pick the service, or set the keyword in SETTINGS.")
+                wave < prefs.retries ->
+                    ui.postDelayed({ fireWave() }, prefs.retryIntervalMs.toLong())
+                else ->
+                    stopSnipe("No slot after ${prefs.retries} waves × ${sessions.size} sessions. Logged as evidence.")
+            }
+        }
+    }
+
+    private fun winSession(s: SnipeSession) {
         sniping = false
-        ui.removeCallbacks(pollRunnable)
+        sessions.forEach { it.stopPoll(); it.resultHandled = true }
         cancelCountdown()
-        Logger.log(this, "*** SUCCESS — bookable page stayed open. Handing over. ***")
-        Logger.screenshot(this, web, "SUCCESS")
-        setStatus("★ SLOT AVAILABLE — TAKE OVER NOW: pick day/time, then enter the OTP. ★")
+        s.web.bringToFront() // show the session that landed a slot
+        Logger.log(this, "*** SUCCESS on session ${s.index} — bookable page stayed open. Handing over. ***")
+        Logger.screenshot(this, s.web, "SUCCESS")
+        setStatus("★ SLOT AVAILABLE (session ${s.index}) — TAKE OVER NOW: pick day/time, then enter the OTP. ★")
         val v = ContextCompat.getSystemService(this, android.os.Vibrator::class.java)
         try {
             v?.vibrate(android.os.VibrationEffect.createWaveform(longArrayOf(0, 400, 200, 400, 200, 400), -1))
@@ -314,22 +329,21 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun dumpPage() {
-        web.evaluateJavascript(
+        primary.evaluateJavascript(
             "(function(){try{Android.onDump(document.body?document.body.innerText:'(no body)');}catch(e){Android.onDump('ERR '+e);}})();",
             null
         )
-        Logger.screenshot(this, web, "dump")
+        Logger.screenshot(this, primary, "dump")
     }
 
-    /** Enumerate every bookable service row on the current Services page. */
     private fun enumerateServices() {
-        val url = web.url ?: ""
+        val url = primary.url ?: ""
         if (!url.contains("/Services", ignoreCase = true) || url.contains("/Booking/")) {
-            web.loadUrl(prefs.serviceUrl)
+            primary.loadUrl(prefs.serviceUrl)
             toast("Loading services page… once it's shown, long-press SNIPE again.")
             return
         }
-        web.evaluateJavascript(servicesJs(), null)
+        primary.evaluateJavascript(servicesJs(), null)
     }
 
     private fun servicesJs(): String = """
@@ -391,14 +405,24 @@ class MainActivity : AppCompatActivity() {
     private fun showDiagnostics() {
         val target = if (prefs.bookingId.isEmpty())
             "(none — matching by keyword '${prefs.keyword}')" else prefs.bookingId
-        val msg = "Evidence folder:\n${Logger.evidencePath(this)}\n\n" +
+        val msg = "Sessions: ${sessions.size}\nEvidence folder:\n${Logger.evidencePath(this)}\n\n" +
                 "Target: $target\n\n--- recent log ---\n${Logger.readTail(this)}"
         AlertDialog.Builder(this)
             .setTitle("Diagnostics / log")
             .setMessage(msg)
             .setPositiveButton("OK", null)
             .setNeutralButton("Pick service") { _, _ -> enumerateServices() }
+            .setNegativeButton("Share log") { _, _ -> shareLog() }
             .show()
+    }
+
+    private fun shareLog() {
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, "Prenota Sniper log")
+            putExtra(Intent.EXTRA_TEXT, Logger.readTail(this@MainActivity, 500_000))
+        }
+        startActivity(Intent.createChooser(send, "Share log"))
     }
 
     private fun clickJs(keyword: String, bookingId: String): String = """
@@ -444,11 +468,7 @@ class MainActivity : AppCompatActivity() {
     """.trimIndent()
 
     /**
-     * Evaluated repeatedly after a click. Returns one of:
-     *  SOLD    - the sold-out modal / message is present
-     *  SUCCESS - a visible calendar/date-picker is showing on a booking page
-     *  BOOK    - on a /Services/Booking/ page, no modal yet (may settle into SUCCESS)
-     *  WAIT    - anything else (mid-navigation, bounced back to the list)
+     * Evaluated repeatedly after a click. Returns SOLD / SUCCESS / BOOK / WAIT.
      */
     private val STATE_JS: String = """
         (function(){
@@ -525,7 +545,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         val kw = field("Service keyword (matches the table row)", prefs.keyword)
-        val retries = field("Max attempts", prefs.retries.toString())
+        val sessionsField = field("Parallel sessions 1-4 (relaunch to apply)", prefs.parallelSessions.toString())
+        val retries = field("Max waves", prefs.retries.toString())
         val interval = field("Retry interval (ms)", prefs.retryIntervalMs.toString())
         val prewarm = field("Alert minutes before release", prefs.prewarmMinutes.toString())
         val time = field("Release time HH:MM (Europe/London)",
@@ -542,6 +563,7 @@ class MainActivity : AppCompatActivity() {
             .setView(box)
             .setPositiveButton("Save") { _, _ ->
                 prefs.keyword = kw.text.toString().trim()
+                prefs.parallelSessions = sessionsField.text.toString().toIntOrNull() ?: prefs.parallelSessions
                 prefs.retries = retries.text.toString().toIntOrNull() ?: prefs.retries
                 prefs.retryIntervalMs = interval.text.toString().toIntOrNull() ?: prefs.retryIntervalMs
                 prefs.prewarmMinutes = prewarm.text.toString().toIntOrNull() ?: prefs.prewarmMinutes
@@ -562,6 +584,9 @@ class MainActivity : AppCompatActivity() {
                     }
                     maybeStartCountdown()
                 }
+                if (sessionsField.text.toString().toIntOrNull() != null &&
+                    sessionsField.text.toString().toInt() != sessions.size
+                ) toast("Relaunch the app to apply the new session count.")
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -601,6 +626,6 @@ class MainActivity : AppCompatActivity() {
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_LONG).show()
 
     override fun onBackPressed() {
-        if (web.canGoBack()) web.goBack() else super.onBackPressed()
+        if (primary.canGoBack()) primary.goBack() else super.onBackPressed()
     }
 }

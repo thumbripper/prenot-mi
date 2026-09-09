@@ -62,4 +62,9 @@ class Prefs(ctx: Context) {
     var armed: Boolean
         get() = sp.getBoolean("armed", false)
         set(v) = sp.edit().putBoolean("armed", v).apply()
+
+    /** How many WebView sessions to fire concurrently per wave (1-4). */
+    var parallelSessions: Int
+        get() = sp.getInt("parallelSessions", 2).coerceIn(1, 4)
+        set(v) = sp.edit().putInt("parallelSessions", v.coerceIn(1, 4)).apply()
 }
