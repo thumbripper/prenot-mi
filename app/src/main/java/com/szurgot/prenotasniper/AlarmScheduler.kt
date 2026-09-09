@@ -40,8 +40,16 @@ object AlarmScheduler {
 
     fun schedule(ctx: Context, prefs: Prefs) {
         val am = ctx.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        val release = nextRelease(prefs)
-        val fireAt = release.minusMinutes(prefs.prewarmMinutes.toLong())
+        val now = ZonedDateTime.now(LONDON)
+        var release = nextRelease(prefs, now)
+        var fireAt = release.minusMinutes(prefs.prewarmMinutes.toLong())
+        // If the pre-warn time is already here/past (e.g. we're re-scheduling from the
+        // alarm that just fired during the pre-release window), skip to the NEXT window
+        // so we don't immediately re-fire in a loop.
+        if (fireAt.isBefore(now.plusSeconds(60))) {
+            release = nextRelease(prefs, release.plusMinutes(1))
+            fireAt = release.minusMinutes(prefs.prewarmMinutes.toLong())
+        }
         val triggerMs = fireAt.toInstant().toEpochMilli()
 
         val pi = PendingIntent.getBroadcast(
