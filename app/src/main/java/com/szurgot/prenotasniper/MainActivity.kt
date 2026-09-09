@@ -27,6 +27,7 @@ import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import org.json.JSONArray
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlin.concurrent.thread
@@ -60,10 +61,12 @@ class MainActivity : AppCompatActivity() {
         setupWebView()
 
         findViewById<Button>(R.id.btnSnipe).setOnClickListener { startSnipe(manual = true) }
+        findViewById<Button>(R.id.btnSnipe).setOnLongClickListener { enumerateServices(); true }
         findViewById<Button>(R.id.btnStop).setOnClickListener { stopSnipe("Stopped by user.") }
         findViewById<Button>(R.id.btnHome).setOnClickListener { web.loadUrl(prefs.loginUrl) }
         findViewById<Button>(R.id.btnSettings).setOnClickListener { showSettings() }
         findViewById<Button>(R.id.btnSettings).setOnLongClickListener { dumpPage(); true }
+        status.setOnLongClickListener { showDiagnostics(); true }
 
         requestNotifPermission()
         refreshNtp()
@@ -147,6 +150,11 @@ class MainActivity : AppCompatActivity() {
             Logger.log(this@MainActivity, "PAGE DUMP:\n$text")
             ui.post { toast("Page dumped to log.txt") }
         }
+
+        @JavascriptInterface
+        fun onServices(json: String) {
+            ui.post { showServicesDialog(json) }
+        }
     }
 
     // ---------------------------------------------------------------- Snipe
@@ -178,7 +186,8 @@ class MainActivity : AppCompatActivity() {
         attempt++
         setStatus("Sniping… attempt $attempt/${prefs.retries}")
         val kw = prefs.keyword.replace("\"", "").replace("\\", "")
-        web.evaluateJavascript(clickJs(kw), null)
+        val id = prefs.bookingId.replace("\"", "").replace("\\", "")
+        web.evaluateJavascript(clickJs(kw, id), null)
     }
 
     private fun onResult(res: String) {
@@ -226,26 +235,118 @@ class MainActivity : AppCompatActivity() {
         Logger.screenshot(this, web, "dump")
     }
 
-    private fun clickJs(keyword: String): String = """
+    /** Enumerate every bookable service row on the current Services page. */
+    private fun enumerateServices() {
+        val url = web.url ?: ""
+        if (!url.contains("/Services", ignoreCase = true) || url.contains("/Booking/")) {
+            web.loadUrl(prefs.serviceUrl)
+            toast("Loading services page… once it's shown, long-press SNIPE again.")
+            return
+        }
+        web.evaluateJavascript(servicesJs(), null)
+    }
+
+    private fun servicesJs(): String = """
+        (function(){
+          try{
+            var out=[];
+            var rows=document.querySelectorAll('tr');
+            for(var i=0;i<rows.length;i++){
+              var as=rows[i].querySelectorAll('a,button');
+              var href='';
+              for(var j=0;j<as.length;j++){
+                var h=(as[j].getAttribute('href')||'');
+                if(h.indexOf('/Services/Booking/')>=0){ href=h; break; }
+              }
+              if(href){
+                var txt=(rows[i].innerText||'').replace(/\s+/g,' ').trim();
+                out.push(txt.substring(0,100)+' @@ '+href);
+              }
+            }
+            Android.onServices(JSON.stringify(out));
+          }catch(e){ Android.onServices('["ERR: '+e+'"]'); }
+        })();
+    """.trimIndent()
+
+    private fun showServicesDialog(json: String) {
+        val names = ArrayList<String>()
+        val hrefs = ArrayList<String>()
+        try {
+            val arr = JSONArray(json)
+            for (i in 0 until arr.length()) {
+                val parts = arr.getString(i).split(" @@ ")
+                names.add(parts[0])
+                hrefs.add(if (parts.size > 1) parts[1] else "")
+            }
+        } catch (_: Exception) {
+        }
+        if (names.isEmpty()) {
+            AlertDialog.Builder(this)
+                .setTitle("No services found")
+                .setMessage("No booking rows detected. Log in (LOGIN), navigate to the citizenship services list, then long-press SNIPE again.")
+                .setPositiveButton("OK", null).show()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Pick the service to snipe")
+            .setItems(names.toTypedArray()) { _, which ->
+                val href = hrefs[which]
+                val idx = href.indexOf("/Services/Booking/")
+                val id = if (idx >= 0) href.substring(idx) else href
+                prefs.bookingId = id
+                prefs.keyword = names[which].take(40)
+                Logger.log(this, "Service picked: '${names[which]}' -> bookingId='$id'")
+                toast("Target set: ${names[which].take(40)}")
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showDiagnostics() {
+        val target = if (prefs.bookingId.isEmpty())
+            "(none — matching by keyword '${prefs.keyword}')" else prefs.bookingId
+        val msg = "Evidence folder:\n${Logger.evidencePath(this)}\n\n" +
+                "Target: $target\n\n--- recent log ---\n${Logger.readTail(this)}"
+        AlertDialog.Builder(this)
+            .setTitle("Diagnostics / log")
+            .setMessage(msg)
+            .setPositiveButton("OK", null)
+            .setNeutralButton("Pick service") { _, _ -> enumerateServices() }
+            .show()
+    }
+
+    private fun clickJs(keyword: String, bookingId: String): String = """
         (function(){
           try{
             var conf=document.querySelector('.sweet-alert button.confirm, .swal2-confirm, .confirm');
             if(conf){ try{conf.click();}catch(e){} }
+            var idsub="$bookingId";
             var kw="$keyword".toLowerCase();
-            var rows=document.querySelectorAll('tr');
             var target=null;
-            for(var i=0;i<rows.length;i++){
-              var t=(rows[i].innerText||'').toLowerCase();
-              if(t.indexOf(kw)>=0){
-                var as=rows[i].querySelectorAll('a,button');
-                for(var j=0;j<as.length;j++){
-                  var el=as[j];
-                  var et=(el.innerText||'').toLowerCase();
-                  var href=(el.getAttribute('href')||'');
-                  if(et.indexOf('book')>=0 || href.indexOf('/Services/Booking/')>=0){ target=el; break; }
+            // Preferred: match by (untranslated) booking URL substring.
+            if(idsub){
+              var links=document.querySelectorAll('a,button');
+              for(var k=0;k<links.length;k++){
+                var h=(links[k].getAttribute('href')||'');
+                if(h.indexOf(idsub)>=0){ target=links[k]; break; }
+              }
+            }
+            // Fallback: match the row whose text contains the keyword.
+            if(!target){
+              var rows=document.querySelectorAll('tr');
+              for(var i=0;i<rows.length;i++){
+                var t=(rows[i].innerText||'').toLowerCase();
+                if(kw && t.indexOf(kw)>=0){
+                  var as=rows[i].querySelectorAll('a,button');
+                  for(var j=0;j<as.length;j++){
+                    var el=as[j];
+                    var et=(el.innerText||'').toLowerCase();
+                    var href=(el.getAttribute('href')||'');
+                    if(et.indexOf('book')>=0 || et.indexOf('prenot')>=0 || href.indexOf('/Services/Booking/')>=0){ target=el; break; }
+                  }
+                  if(!target){ var a=rows[i].querySelector('a'); if(a) target=a; }
+                  if(target) break;
                 }
-                if(!target){ var a=rows[i].querySelector('a'); if(a) target=a; }
-                if(target) break;
               }
             }
             if(!target){ Android.onResult('NO_SERVICE'); return; }

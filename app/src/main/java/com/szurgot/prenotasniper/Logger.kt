@@ -45,4 +45,16 @@ object Logger {
     }
 
     fun evidencePath(ctx: Context): String = dir(ctx).absolutePath
+
+    /** Return the last [maxChars] characters of the log for in-app display. */
+    fun readTail(ctx: Context, maxChars: Int = 6000): String {
+        return try {
+            val f = File(dir(ctx), "log.txt")
+            if (!f.exists()) return "(log is empty — no attempts yet)"
+            val text = f.readText()
+            if (text.length <= maxChars) text else text.substring(text.length - maxChars)
+        } catch (e: Exception) {
+            "(could not read log: $e)"
+        }
+    }
 }

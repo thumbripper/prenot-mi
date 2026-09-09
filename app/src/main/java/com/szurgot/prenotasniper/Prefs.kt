@@ -16,8 +16,17 @@ class Prefs(ctx: Context) {
 
     /** Keyword matched against each service table row to find the right BOOK link. */
     var keyword: String
-        get() = sp.getString("keyword", "citizenship") ?: ""
+        get() = sp.getString("keyword", "cittadin") ?: ""
         set(v) = sp.edit().putString("keyword", v).apply()
+
+    /**
+     * Preferred: a substring of the target service's booking URL, e.g.
+     * "/Services/Booking/1234". Language-independent. Set by "Pick service".
+     * Takes priority over [keyword] when non-empty.
+     */
+    var bookingId: String
+        get() = sp.getString("bookingId", "") ?: ""
+        set(v) = sp.edit().putString("bookingId", v).apply()
 
     /** How many times to re-attempt on a "sold out" result before giving up. */
     var retries: Int
