@@ -146,7 +146,7 @@ class MainActivity : AppCompatActivity() {
         }
         primary.loadUrl(start)
 
-        setStatus("Ready (${sessions.size} sessions). Log in once, pick the service (long-press SNIPE), then Arm or Snipe Now.")
+        setStatus("Ready · v${BuildConfig.VERSION_NAME} · ${sessions.size} sessions. Log in, pick service (long-press SNIPE), then Arm or Snipe.")
     }
 
     override fun onNewIntent(intent: Intent) {

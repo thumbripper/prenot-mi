@@ -11,17 +11,27 @@ android {
         applicationId "com.szurgot.prenotasniper"
         minSdk 26
         targetSdk 36
-        versionCode 1
-        versionName "1.0"
+        versionCode 8
+        versionName "8"
     }
 
     buildTypes {
         debug {
             applicationIdSuffix ".debug"
-            versionNameSuffix "-debug"
         }
         release {
             minifyEnabled false
+        }
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    // Name the APK with the version, e.g. prenot-mi-v8-debug.apk
+    applicationVariants.all { variant ->
+        variant.outputs.all { output ->
+            outputFileName = "prenot-mi-v${variant.versionName}-${variant.buildType.name}.apk"
         }
     }
 
