@@ -52,6 +52,8 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var ntpOffsetMs: Long = 0
     private var sniping = false
     private var wave = 0
+    private var englishEnsured = false
+    private val englishTriedUrls = HashSet<String>()
 
     private var countdownRunnable: Runnable? = null
     private var fireRunnable: Runnable? = null
@@ -188,6 +190,11 @@ class MainActivity : AppCompatActivity() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 val u = url ?: return
                 Logger.log(this@MainActivity, "PAGE LOADED[${s.index}]: $u")
+                // Only on the prenotami portal — never on the iam.esteri.it login flow,
+                // where clicking a language link could disrupt sign-in.
+                if (!sniping && s.index == 0 && prefs.forceEnglish && !englishEnsured &&
+                    u.contains("prenotami.esteri.it", ignoreCase = true)
+                ) ensureEnglish(s.web, u)
                 if (!sniping) return
                 if (s.awaitingLoad && u.contains("/Services", ignoreCase = true) && !u.contains("/Booking/")) {
                     s.awaitingLoad = false
@@ -302,7 +309,7 @@ class MainActivity : AppCompatActivity() {
 
         s.done = true
         if (sessions.all { it.done }) {
-            Logger.screenshot(this, primary, "wave${wave}_${res.take(8)}")
+            snap("wave${wave}_${res.take(8)}")
             when {
                 sessions.all { it.lastRes == "NO_SERVICE" } ->
                     stopSnipe("Service not found. Long-press SNIPE to pick the service, or set the keyword in SETTINGS.")
@@ -320,12 +327,124 @@ class MainActivity : AppCompatActivity() {
         cancelCountdown()
         s.web.bringToFront() // show the session that landed a slot
         Logger.log(this, "*** SUCCESS on session ${s.index} — bookable page stayed open. Handing over. ***")
-        Logger.screenshot(this, s.web, "SUCCESS")
-        setStatus("★ SLOT AVAILABLE (session ${s.index}) — TAKE OVER NOW: pick day/time, then enter the OTP. ★")
+        snap("SUCCESS")
+        dumpWinningPage(s) // capture the booking/OTP page for tuning the OTP automation
+        setStatus("★ SLOT (session ${s.index}) — TAKE OVER: fill the form; OTP is being handled. ★")
         val v = ContextCompat.getSystemService(this, android.os.Vibrator::class.java)
         try {
             v?.vibrate(android.os.VibrationEffect.createWaveform(longArrayOf(0, 400, 200, 400, 200, 400), -1))
         } catch (_: Exception) {}
+        startOtpAssist(s)
+    }
+
+    /** Whole-app-window screenshot (buttons + banner + page), saved to evidence. */
+    private fun snap(tag: String) = Logger.screenshot(this, window.decorView, tag)
+
+    private fun dumpWinningPage(s: SnipeSession) {
+        s.web.evaluateJavascript(
+            "(function(){try{Android.onDump('BOOKING PAGE:\\n'+(document.body?document.body.innerText:'')+'\\n---HTML(4k)---\\n'+document.documentElement.outerHTML.substring(0,4000));}catch(e){Android.onDump('ERR '+e);}})();",
+            null
+        )
+    }
+
+    // ---------------------------------------------------------------- English + OTP
+
+    private fun ensureEnglish(web: WebView, url: String) {
+        if (url in englishTriedUrls) return   // one attempt per page, avoids reload loops
+        englishTriedUrls.add(url)
+        web.evaluateJavascript(ENGLISH_JS) { r ->
+            when (r?.trim('"')) {
+                "EN" -> englishEnsured = true  // already English (cookie carried) -> stop checking
+                "CLICKED" -> Logger.log(this, "clicked EN toggle on $url")
+            }
+        }
+    }
+
+    private fun startOtpAssist(win: SnipeSession) {
+        if (!prefs.autoOtp) return
+        OtpHolder.clear()
+        val startedAt = System.currentTimeMillis()
+        if (!notificationAccessEnabled()) {
+            Logger.log(this, "Auto-OTP: notification access NOT granted — code won't be auto-read.")
+        }
+        // 1) request the OTP email as soon as we're on the booking page
+        ui.postDelayed({
+            win.web.evaluateJavascript(REQUEST_OTP_JS) { r -> Logger.log(this, "OTP request -> ${r?.trim('"')}") }
+        }, 1500)
+        // 2) poll for the code captured from the Gmail notification, then fill it
+        val poll = object : Runnable {
+            override fun run() {
+                val c = OtpHolder.code
+                if (c != null && OtpHolder.at >= startedAt) {
+                    val cm = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                    cm.setPrimaryClip(android.content.ClipData.newPlainText("OTP", c))
+                    setStatus("★ OTP $c (copied). Filling… then press Avanti/Forward. ★")
+                    win.web.evaluateJavascript(fillOtpJs(c)) { r -> Logger.log(this@MainActivity, "OTP autofill $c -> ${r?.trim('"')}") }
+                    return
+                }
+                if (System.currentTimeMillis() - startedAt < 120_000) ui.postDelayed(this, 700)
+            }
+        }
+        ui.postDelayed(poll, 2000)
+    }
+
+    private fun fillOtpJs(code: String): String = """
+        (function(){
+          try{
+            var inp=document.querySelector('input[autocomplete=one-time-code],input[name*=otp i],input[id*=otp i]');
+            if(!inp){ var ins=document.querySelectorAll('input');
+              for(var i=0;i<ins.length;i++){ var t=(ins[i].type||'').toLowerCase(); var ml=ins[i].maxLength;
+                if((t==='text'||t==='tel'||t==='number') && ml>=4 && ml<=8){ inp=ins[i]; break; } } }
+            if(!inp) return 'NOFIELD';
+            inp.focus(); inp.value='$code';
+            inp.dispatchEvent(new Event('input',{bubbles:true}));
+            inp.dispatchEvent(new Event('change',{bubbles:true}));
+            return 'FILLED';
+          }catch(e){ return 'ERR:'+e; }
+        })();
+    """.trimIndent()
+
+    private val REQUEST_OTP_JS: String = """
+        (function(){
+          try{
+            var els=document.querySelectorAll('a,button,input[type=button],input[type=submit]');
+            for(var i=0;i<els.length;i++){
+              var t=(((els[i].innerText||'')+' '+(els[i].value||''))).toLowerCase();
+              if((t.indexOf('otp')>=0||t.indexOf('codice')>=0||t.indexOf('code')>=0) &&
+                 (t.indexOf('nuov')>=0||t.indexOf('new')>=0||t.indexOf('invia')>=0||t.indexOf('send')>=0||
+                  t.indexOf('richie')>=0||t.indexOf('request')>=0||t.indexOf('resend')>=0||t.indexOf('genera')>=0)){
+                els[i].click(); return 'CLICKED:'+t.trim().substring(0,30);
+              }
+            }
+            return 'NOBTN';
+          }catch(e){ return 'ERR:'+e; }
+        })();
+    """.trimIndent()
+
+    private val ENGLISH_JS: String = """
+        (function(){
+          try{
+            var lang=(document.documentElement.getAttribute('lang')||'').toLowerCase();
+            if(lang.indexOf('en')===0) return 'EN';
+            var els=document.querySelectorAll('a,button,span,li,[onclick]');
+            for(var i=0;i<els.length;i++){
+              var t=(els[i].innerText||'').trim().toUpperCase();
+              if(t==='ENG'||t==='EN'||t==='ENGLISH'){ els[i].click(); return 'CLICKED'; }
+            }
+            return 'NOLINK';
+          }catch(e){ return 'ERR'; }
+        })();
+    """.trimIndent()
+
+    private fun notificationAccessEnabled(): Boolean {
+        return try {
+            val flat = Settings.Secure.getString(contentResolver, "enabled_notification_listeners") ?: ""
+            flat.contains(packageName)
+        } catch (_: Exception) { false }
+    }
+
+    private fun openNotificationAccess() {
+        try { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) } catch (_: Exception) {}
     }
 
     private fun dumpPage() {
@@ -333,7 +452,7 @@ class MainActivity : AppCompatActivity() {
             "(function(){try{Android.onDump(document.body?document.body.innerText:'(no body)');}catch(e){Android.onDump('ERR '+e);}})();",
             null
         )
-        Logger.screenshot(this, primary, "dump")
+        snap("dump")
     }
 
     private fun enumerateServices() {
@@ -552,6 +671,16 @@ class MainActivity : AppCompatActivity() {
         val time = field("Release time HH:MM (Europe/London)",
             "%02d:%02d".format(prefs.releaseHour, prefs.releaseMinute))
         val days = field("Release days (1=Mon..7=Sun)", prefs.releaseDays)
+        val englishCb = CheckBox(this).apply {
+            text = "Force English site"
+            isChecked = prefs.forceEnglish
+            box.addView(this)
+        }
+        val otpCb = CheckBox(this).apply {
+            text = "Auto-OTP (request + read from Gmail notification)"
+            isChecked = prefs.autoOtp
+            box.addView(this)
+        }
         val armCb = CheckBox(this).apply {
             text = "Armed (alert + auto-fire at release)"
             isChecked = prefs.armed
@@ -569,6 +698,13 @@ class MainActivity : AppCompatActivity() {
                 prefs.prewarmMinutes = prewarm.text.toString().toIntOrNull() ?: prefs.prewarmMinutes
                 parseTime(time.text.toString())
                 prefs.releaseDays = days.text.toString().trim()
+                prefs.forceEnglish = englishCb.isChecked
+                if (englishCb.isChecked) { englishEnsured = false; englishTriedUrls.clear() }
+                prefs.autoOtp = otpCb.isChecked
+                if (otpCb.isChecked && !notificationAccessEnabled()) {
+                    toast("Grant 'Notification access' to Prenota Sniper so it can read the OTP.")
+                    openNotificationAccess()
+                }
 
                 val wantArmed = armCb.isChecked
                 if (wantArmed && !ensureExactAlarms()) {

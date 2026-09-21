@@ -67,4 +67,14 @@ class Prefs(ctx: Context) {
     var parallelSessions: Int
         get() = sp.getInt("parallelSessions", 2).coerceIn(1, 4)
         set(v) = sp.edit().putInt("parallelSessions", v.coerceIn(1, 4)).apply()
+
+    /** Auto-switch the Prenot@mi site to English after login. */
+    var forceEnglish: Boolean
+        get() = sp.getBoolean("forceEnglish", true)
+        set(v) = sp.edit().putBoolean("forceEnglish", v).apply()
+
+    /** On handover, auto-request the OTP and read it from the Gmail notification. */
+    var autoOtp: Boolean
+        get() = sp.getBoolean("autoOtp", true)
+        set(v) = sp.edit().putBoolean("autoOtp", v).apply()
 }
