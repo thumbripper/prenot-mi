@@ -37,8 +37,12 @@ class OtpListenerService : NotificationListenerService() {
                 low.contains("esteri") || low.contains("one-time") || low.contains("verification")
             if (!relevant) return
 
+            // Prefer a code right after an OTP keyword, e.g. "OTP Code:621941".
+            val keyed = Regex("(?:otp|code|codice)\\D{0,12}(\\d{4,8})", RegexOption.IGNORE_CASE)
+                .find(blob)?.groupValues?.getOrNull(1)
             val found = digits.findAll(blob).map { it.value }.toList()
-            val code = found.firstOrNull { it.length == 6 }
+            val code = keyed
+                ?: found.firstOrNull { it.length == 6 }
                 ?: found.firstOrNull { it.length in 5..6 }
                 ?: found.firstOrNull() ?: return
 

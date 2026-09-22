@@ -11,8 +11,8 @@ android {
         applicationId "com.szurgot.prenotasniper"
         minSdk 26
         targetSdk 36
-        versionCode 8
-        versionName "8"
+        versionCode 10
+        versionName "10"
     }
 
     buildTypes {

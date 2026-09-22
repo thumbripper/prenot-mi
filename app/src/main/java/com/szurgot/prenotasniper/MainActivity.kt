@@ -146,7 +146,7 @@ class MainActivity : AppCompatActivity() {
         }
         primary.loadUrl(start)
 
-        setStatus("Ready · v${BuildConfig.VERSION_NAME} · ${sessions.size} sessions. Log in, pick service (long-press SNIPE), then Arm or Snipe.")
+        setStatus("Ready · ${sessions.size} sessions. Log in, pick service (long-press SNIPE), then Arm or Snipe.")
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -758,7 +758,7 @@ class MainActivity : AppCompatActivity() {
 
     // ---------------------------------------------------------------- Helpers
 
-    private fun setStatus(s: String) { status.text = s }
+    private fun setStatus(s: String) { status.text = "v${BuildConfig.VERSION_NAME} · $s" }
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_LONG).show()
 
     override fun onBackPressed() {
