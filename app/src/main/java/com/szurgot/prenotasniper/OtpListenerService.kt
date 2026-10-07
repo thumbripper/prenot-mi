@@ -31,10 +31,10 @@ class OtpListenerService : NotificationListenerService() {
             if (blob.isBlank()) return
 
             val low = blob.lowercase()
-            val relevant = pkg.contains("gm", true) || pkg.contains("gmail", true) ||
-                pkg.contains("email", true) || low.contains("otp") ||
-                low.contains("prenot") || low.contains("codice") ||
-                low.contains("esteri") || low.contains("one-time") || low.contains("verification")
+            // Only Prenot@mi OTP emails — avoids grabbing numbers from unrelated mail
+            // (previously any Gmail notification matched, which was noisy and a privacy leak).
+            val relevant = low.contains("prenot") || low.contains("otp code") ||
+                low.contains("codice otp") || low.contains("esteri")
             if (!relevant) return
 
             // Prefer a code right after an OTP keyword, e.g. "OTP Code:621941".

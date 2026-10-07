@@ -54,6 +54,7 @@ class MainActivity : AppCompatActivity() {
     private var wave = 0
     private var englishEnsured = false
     private val englishTriedUrls = HashSet<String>()
+    private var calendarCaptured = false
 
     private var countdownRunnable: Runnable? = null
     private var fireRunnable: Runnable? = null
@@ -190,6 +191,7 @@ class MainActivity : AppCompatActivity() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 val u = url ?: return
                 Logger.log(this@MainActivity, "PAGE LOADED[${s.index}]: $u")
+                if (u.contains("/BookingCalendar", ignoreCase = true)) captureCalendar(s.web)
                 // Only on the prenotami portal — never on the iam.esteri.it login flow,
                 // where clicking a language link could disrupt sign-in.
                 if (!sniping && s.index == 0 && prefs.forceEnglish && !englishEnsured &&
@@ -266,6 +268,7 @@ class MainActivity : AppCompatActivity() {
         cancelCountdown()
         sniping = true
         wave = 0
+        calendarCaptured = false
         val target = if (prefs.bookingId.isNotEmpty()) prefs.bookingId else prefs.keyword
         Logger.log(this, "SNIPE START (${if (manual) "manual" else "scheduled"}) target='$target' sessions=${sessions.size}")
         fireWave()
@@ -340,6 +343,18 @@ class MainActivity : AppCompatActivity() {
     /** Whole-app-window screenshot (buttons + banner + page), saved to evidence. */
     private fun snap(tag: String) = Logger.screenshot(this, window.decorView, tag)
 
+    /** On reaching the booking calendar, capture a screenshot + DOM (for evidence and
+     *  to build slot auto-selection later). Fires once per snipe. */
+    private fun captureCalendar(web: WebView) {
+        if (calendarCaptured) return
+        calendarCaptured = true
+        snap("calendar")
+        web.evaluateJavascript(
+            "(function(){try{Android.onDump('CALENDAR PAGE:\\n'+((document.body?document.body.innerText:'')+'').substring(0,2500)+'\\n---HTML(6k)---\\n'+document.documentElement.outerHTML.substring(0,6000));}catch(e){Android.onDump('ERR '+e);}})();",
+            null
+        )
+    }
+
     private fun dumpWinningPage(s: SnipeSession) {
         s.web.evaluateJavascript(
             "(function(){try{Android.onDump('BOOKING PAGE:\\n'+(document.body?document.body.innerText:'')+'\\n---HTML(4k)---\\n'+document.documentElement.outerHTML.substring(0,4000));}catch(e){Android.onDump('ERR '+e);}})();",
@@ -378,8 +393,16 @@ class MainActivity : AppCompatActivity() {
                 if (c != null && OtpHolder.at >= startedAt) {
                     val cm = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
                     cm.setPrimaryClip(android.content.ClipData.newPlainText("OTP", c))
-                    setStatus("★ OTP $c (copied). Filling… then press Avanti/Forward. ★")
-                    win.web.evaluateJavascript(fillOtpJs(c)) { r -> Logger.log(this@MainActivity, "OTP autofill $c -> ${r?.trim('"')}") }
+                    setStatus("★ OTP $c filled — submitting to the calendar… ★")
+                    win.web.evaluateJavascript(fillOtpJs(c)) { r ->
+                        Logger.log(this@MainActivity, "OTP autofill $c -> ${r?.trim('"')}")
+                        // Accept privacy + click FORWARD to reach the calendar without the manual delay.
+                        ui.postDelayed({
+                            win.web.evaluateJavascript(SUBMIT_OTP_JS) { s ->
+                                Logger.log(this@MainActivity, "OTP submit -> ${s?.trim('"')}")
+                            }
+                        }, 500)
+                    }
                     return
                 }
                 if (System.currentTimeMillis() - startedAt < 120_000) ui.postDelayed(this, 700)
@@ -417,6 +440,24 @@ class MainActivity : AppCompatActivity() {
               }
             }
             return 'NOBTN';
+          }catch(e){ return 'ERR:'+e; }
+        })();
+    """.trimIndent()
+
+    /** After the OTP is filled: tick the privacy-policy checkbox and click FORWARD/AVANTI. */
+    private val SUBMIT_OTP_JS: String = """
+        (function(){
+          try{
+            var cbs=document.querySelectorAll('input[type=checkbox]');
+            for(var i=0;i<cbs.length;i++){ if(!cbs[i].checked){ try{cbs[i].click();}catch(e){} } }
+            var els=document.querySelectorAll('a,button,input[type=submit],input[type=button]');
+            for(var j=0;j<els.length;j++){
+              var t=(((els[j].innerText||'')+' '+(els[j].value||''))).toLowerCase();
+              if(t.indexOf('forward')>=0||t.indexOf('avanti')>=0||t.indexOf('prosegui')>=0||t.indexOf('conferma')>=0){
+                els[j].click(); return 'SUBMIT:'+t.trim().substring(0,20);
+              }
+            }
+            return 'NOFWD';
           }catch(e){ return 'ERR:'+e; }
         })();
     """.trimIndent()
