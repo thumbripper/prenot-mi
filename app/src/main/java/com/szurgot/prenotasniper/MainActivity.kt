@@ -349,12 +349,37 @@ class MainActivity : AppCompatActivity() {
         if (calendarCaptured) return
         calendarCaptured = true
         snap("calendar")
-        web.evaluateJavascript(
-            "(function(){try{Android.onDump('CALENDAR PAGE:\\n'+((document.body?document.body.innerText:'')+'').substring(0,2500)+'\\n---HTML(6k)---\\n'+document.documentElement.outerHTML.substring(0,6000));}catch(e){Android.onDump('ERR '+e);}})();",
-            null
-        )
+        web.evaluateJavascript(CALENDAR_DUMP_JS, null)
         if (prefs.autoBook) startAutoBook(web)
     }
+
+    /** Targeted calendar diagnostic: each day cell's tag/class/background colour and
+     *  each time band's tag/class/text — exactly what's needed to tune the selectors. */
+    private val CALENDAR_DUMP_JS: String = """
+        (function(){
+          try{
+            var out='CALENDAR DUMP url='+location.href+'\n';
+            var cells=document.querySelectorAll('td,a,div,span');
+            var n=0;
+            for(var i=0;i<cells.length && n<50;i++){
+              var c=cells[i]; var t=(c.innerText||'').trim();
+              if(!(t.length>=1 && t.length<=2 && (''+(+t))===t && (+t)>=1 && (+t)<=31)) continue;
+              out+='DAY '+t+' <'+c.tagName+'> cls="'+(c.className||'')+'" bg='+getComputedStyle(c).backgroundColor+'\n';
+              n++;
+            }
+            var all=document.querySelectorAll('li,div,a,button,span,td,label');
+            var bn=0;
+            for(var j=0;j<all.length && bn<25;j++){
+              var tt=(all[j].innerText||'');
+              if(/\d{1,2}:\d{2}/.test(tt) && tt.indexOf('-')>=0 && tt.length<50){
+                out+='BAND <'+all[j].tagName+'> cls="'+(all[j].className||'')+'" txt="'+tt.replace(/\s+/g,' ').trim()+'"\n';
+                bn++;
+              }
+            }
+            Android.onDump(out);
+          }catch(e){ Android.onDump('CAL DUMP ERR '+e); }
+        })();
+    """.trimIndent()
 
     // ---------------------------------------------------------------- Auto-book
 
@@ -368,6 +393,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun scanStep(web: WebView) {
+        snap("cal_m$scanMonths")                 // screenshot every month scanned
+        web.evaluateJavascript(CALENDAR_DUMP_JS, null)  // + its day/band DOM details
         web.evaluateJavascript(FIND_GREEN_DAY_JS) { r ->
             val res = r?.trim('"') ?: ""
             Logger.log(this, "autobook scan (month +$scanMonths) -> $res")
