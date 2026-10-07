@@ -353,7 +353,124 @@ class MainActivity : AppCompatActivity() {
             "(function(){try{Android.onDump('CALENDAR PAGE:\\n'+((document.body?document.body.innerText:'')+'').substring(0,2500)+'\\n---HTML(6k)---\\n'+document.documentElement.outerHTML.substring(0,6000));}catch(e){Android.onDump('ERR '+e);}})();",
             null
         )
+        if (prefs.autoBook) startAutoBook(web)
     }
+
+    // ---------------------------------------------------------------- Auto-book
+
+    private var scanMonths = 0
+
+    private fun startAutoBook(web: WebView) {
+        scanMonths = 0
+        setStatus("★ On calendar — auto-scanning months for an open slot… ★")
+        Logger.log(this, "autobook START")
+        ui.postDelayed({ scanStep(web) }, 900) // let the calendar render
+    }
+
+    private fun scanStep(web: WebView) {
+        web.evaluateJavascript(FIND_GREEN_DAY_JS) { r ->
+            val res = r?.trim('"') ?: ""
+            Logger.log(this, "autobook scan (month +$scanMonths) -> $res")
+            if (res.startsWith("DAY")) {
+                setStatus("★ Found an open day — booking… ★")
+                ui.postDelayed({ bookStep(web) }, 1000) // wait for time bands to load
+            } else if (scanMonths < 8) {
+                scanMonths++
+                web.evaluateJavascript(NEXT_MONTH_JS) { nm ->
+                    Logger.log(this, "autobook next month -> ${nm?.trim('"')}")
+                    ui.postDelayed({ scanStep(web) }, 800)
+                }
+            } else {
+                Logger.log(this, "autobook: NO available day across ${scanMonths + 1} months")
+                setStatus("No open slot in any month — logged (strong court evidence).")
+                snap("calendar_noavail")
+            }
+        }
+    }
+
+    private fun bookStep(web: WebView) {
+        web.evaluateJavascript(BOOK_BAND_JS) { r ->
+            val res = r?.trim('"') ?: ""
+            Logger.log(this, "autobook book -> $res")
+            when {
+                res == "BOOKED" || res == "SELECTED_NOBOOKBTN" -> {
+                    setStatus("★★ SLOT GRABBED — CHECK THE APP NOW and confirm the booking ★★")
+                    snap("BOOKED")
+                    val v = ContextCompat.getSystemService(this, android.os.Vibrator::class.java)
+                    try {
+                        v?.vibrate(android.os.VibrationEffect.createWaveform(longArrayOf(0, 600, 200, 600, 200, 600, 200, 600), -1))
+                    } catch (_: Exception) {}
+                }
+                scanMonths < 8 -> { // clicked day had no bookable band — keep scanning
+                    scanMonths++
+                    web.evaluateJavascript(NEXT_MONTH_JS) { ui.postDelayed({ scanStep(web) }, 800) }
+                }
+                else -> { setStatus("Found days but no bookable time band — logged."); snap("calendar_noband") }
+            }
+        }
+    }
+
+    /** Click the first "available" (green) day in the current month, if any. */
+    private val FIND_GREEN_DAY_JS: String = """
+        (function(){
+          try{
+            var cells=document.querySelectorAll('td,a,div,span');
+            for(var i=0;i<cells.length;i++){
+              var c=cells[i];
+              var txt=(c.innerText||'').trim();
+              if(!/^\d{1,2}${'$'}/.test(txt)) continue;
+              var cls=(c.className||'').toString().toLowerCase();
+              if(cls.indexOf('disabl')>=0||cls.indexOf('booked')>=0||cls.indexOf('notavail')>=0||cls.indexOf('unavail')>=0) continue;
+              var avail=false;
+              if(cls.indexOf('avail')>=0||cls.indexOf('free')>=0||cls.indexOf('green')>=0||cls.indexOf('selectable')>=0) avail=true;
+              if(!avail){
+                var bg=getComputedStyle(c).backgroundColor||'';
+                var m=bg.match(/\d+/g);
+                if(m&&m.length>=3){ var r=+m[0],g=+m[1],b=+m[2]; if(g>120&&g>=r+30&&g>=b+30) avail=true; }
+              }
+              if(avail){ c.click(); return 'DAY:'+txt; }
+            }
+            return 'NODAY';
+          }catch(e){ return 'ERR:'+e; }
+        })();
+    """.trimIndent()
+
+    /** Select the first time band with spots > 0 and click BOOK/PRENOTA. */
+    private val BOOK_BAND_JS: String = """
+        (function(){
+          try{
+            var all=document.querySelectorAll('li,div,a,button,span,td,label');
+            for(var i=0;i<all.length;i++){
+              var t=(all[i].innerText||'');
+              if(/\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}/.test(t)){
+                var mm=t.match(/\((\d+)\)/);
+                if(mm && (+mm[1])>0){
+                  all[i].click();
+                  var bs=document.querySelectorAll('a,button,input[type=submit],input[type=button]');
+                  for(var j=0;j<bs.length;j++){
+                    var b=(((bs[j].innerText||'')+' '+(bs[j].value||''))).toLowerCase();
+                    if(b.indexOf('book')>=0||b.indexOf('prenota')>=0){ bs[j].click(); return 'BOOKED'; }
+                  }
+                  return 'SELECTED_NOBOOKBTN';
+                }
+              }
+            }
+            return 'NOBAND';
+          }catch(e){ return 'ERR:'+e; }
+        })();
+    """.trimIndent()
+
+    private val NEXT_MONTH_JS: String = """
+        (function(){
+          var els=document.querySelectorAll('a,button,span,th,i,[onclick]');
+          for(var i=0;i<els.length;i++){
+            var t=(els[i].innerText||'').trim();
+            var cls=(els[i].className||'').toString().toLowerCase();
+            if(t==='>'||t==='›'||t==='»'||cls.indexOf('next')>=0||cls.indexOf('right')>=0){ els[i].click(); return 'NEXT'; }
+          }
+          return 'NONEXT';
+        })();
+    """.trimIndent()
 
     private fun dumpWinningPage(s: SnipeSession) {
         s.web.evaluateJavascript(
@@ -722,6 +839,11 @@ class MainActivity : AppCompatActivity() {
             isChecked = prefs.autoOtp
             box.addView(this)
         }
+        val bookCb = CheckBox(this).apply {
+            text = "Auto-book (scan calendar + grab first open slot)"
+            isChecked = prefs.autoBook
+            box.addView(this)
+        }
         val armCb = CheckBox(this).apply {
             text = "Armed (alert + auto-fire at release)"
             isChecked = prefs.armed
@@ -742,6 +864,7 @@ class MainActivity : AppCompatActivity() {
                 prefs.forceEnglish = englishCb.isChecked
                 if (englishCb.isChecked) { englishEnsured = false; englishTriedUrls.clear() }
                 prefs.autoOtp = otpCb.isChecked
+                prefs.autoBook = bookCb.isChecked
                 if (otpCb.isChecked && !notificationAccessEnabled()) {
                     toast("Grant 'Notification access' to Prenota Sniper so it can read the OTP.")
                     openNotificationAccess()

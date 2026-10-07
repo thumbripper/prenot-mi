@@ -77,4 +77,9 @@ class Prefs(ctx: Context) {
     var autoOtp: Boolean
         get() = sp.getBoolean("autoOtp", true)
         set(v) = sp.edit().putBoolean("autoOtp", v).apply()
+
+    /** On the calendar, auto-scan months and book the first available slot. */
+    var autoBook: Boolean
+        get() = sp.getBoolean("autoBook", true)
+        set(v) = sp.edit().putBoolean("autoBook", v).apply()
 }
