@@ -13,26 +13,41 @@
 </head>
 <body class="loggedin">
   <!-- Mock of /BookingCalendar mirroring the real DOM classes (docs/site-notes.md).
-       Availability is applied ~700ms after each render (like the real AJAX).
-       Month 0: nothing configured. Month 1: red (full) days only.
-       Month 2: day 12 has a free slot that fails at BOOK ("no longer available");
-                day 14 has a free slot that succeeds (confirm() -> Reservation page). -->
+       Opens on the current month; availability is applied ~700ms after each render (like the
+       real AJAX). Release pattern: every Tue/Thu from month +2 up to the new day is full (red);
+       the new day = today + 169 days has 3 slots: 10:45 fails at BOOK ("non è più disponibile"),
+       11:30 succeeds (confirm() -> Reservation page).
+       ?nopred=1  : no new day (tests the fallback scan);
+       ?cancel=1  : a cancellation (1 free slot) on the first Tuesday of month +3. -->
   <header class="header"><nav class="top-nav"><a href="/Services">Book</a> <a href="#">My appointments</a></nav></header>
   <h2>Citizenship by Birth</h2>
   <table id="cal">
-    <thead><tr><th class="prev">&lt;</th><th class="picker-switch" id="sw"></th><th class="next" onclick="nextMonth()">&gt;</th></tr></thead>
+    <thead><tr><th class="prev" onclick="prevMonth()">&lt;</th><th class="picker-switch" id="sw"></th><th class="next" onclick="nextMonth()">&gt;</th></tr></thead>
     <tbody id="body"></tbody>
   </table>
   <div class="events-content"><ul><li class="selected" id="fasce"></li></ul></div>
   <div>Available / Not available / Day selected / Days not configured</div>
   <button id="btnBook" type="button" onclick="doBook()">BOOK</button>
 <script>
-  var M=[{name:'novembre 2026',n:30,full:[],avail:{}},
-         {name:'dicembre 2026',n:31,full:[1,3,8,10],avail:{}},
-         {name:'gennaio 2027',n:31,full:[5,7],avail:{12:[['10:15 - 10:30',0],['10:45 - 11:00',1]],14:[['10:31 - 10:44',2]]}}];
-  var m=0, sel=null, selF=null, failSlot='12|10:45 - 11:00';
+  var qs=new URLSearchParams(location.search);
+  var IT=['gennaio','febbraio','marzo','aprile','maggio','giugno','luglio','agosto','settembre','ottobre','novembre','dicembre'];
+  var today=new Date(); today.setHours(12,0,0,0);
+  var pred=new Date(today.getTime()+169*864e5);
+  var M={};
+  function build(k){
+    var y=today.getFullYear(), mo=today.getMonth()+k; y+=Math.floor(mo/12); mo=((mo%12)+12)%12;
+    var n=new Date(y,mo+1,0).getDate(), full=[], avail={};
+    for(var d=1; d<=n; d++){ var dt=new Date(y,mo,d,12); var wd=dt.getDay();
+      if(k>=2 && (wd===2||wd===4) && dt<pred && !(dt.getFullYear()===pred.getFullYear()&&dt.getMonth()===pred.getMonth()&&d===pred.getDate())) full.push(d); }
+    if(!qs.get('nopred') && pred.getFullYear()===y && pred.getMonth()===mo)
+      avail[pred.getDate()]=[['10:15 - 10:30',0],['10:45 - 11:00',1],['11:30 - 11:45',1]];
+    if(qs.get('cancel') && k===3){ for(var d2=1; d2<=7; d2++){ if(new Date(y,mo,d2,12).getDay()===2){
+      full=full.filter(function(x){return x!==d2;}); avail[d2]=[['11:01 - 11:29',1]]; break; } } }
+    return {name:IT[mo]+' '+y,n:n,full:full,avail:avail};
+  }
+  var m=0, sel=null, selF=null, failSlot=pred.getDate()+'|10:45 - 11:00';
   window.jQuery={active:0};   // mimic jQuery's in-flight AJAX counter
-  function cur(){ return M[m] || (M[m]={name:'mese +'+m,n:30,full:[],avail:{}}); }
+  function cur(){ return M[m] || (M[m]=build(m)); }
   function render(){
     var mo=cur(); document.getElementById('sw').innerText=mo.name;
     var b=document.getElementById('body'); b.innerHTML=''; var tr;
@@ -40,27 +55,29 @@
       var td=document.createElement('td'); td.className='day'; td.innerText=d; td.dataset.d=d;
       td.onclick=function(){ pickDay(+this.dataset.d); }; tr.appendChild(td); }
     document.getElementById('fasce').innerHTML=''; sel=null; selF=null;
-    jQuery.active++; setTimeout(function(){ jQuery.active--; applyAvail(); }, 700);   // "AJAX"
+    var req=m; jQuery.active++; setTimeout(function(){ jQuery.active--; applyAvail(req); }, 700);   // "AJAX" for the month shown at request time
   }
-  function applyAvail(){
-    var mo=cur(), first=null;
+  function applyAvail(req){
+    var mo=M[req]||cur(), first=null;
+    if(req!==m) console.log('mock: stale AJAX for month +'+req+' applied while showing +'+m);
     document.querySelectorAll('td.day').forEach(function(td){ var d=+td.dataset.d;
       if(mo.avail[d]){ td.className='day'; if(first===null) first=d; }
       else if(mo.full.indexOf(d)>=0) td.className='day disabled notAvailableDay';
       else td.className='day disabled'; });
-    if(first!==null) pickDay(first);
+    if(first!==null && req===m) pickDay(first);
   }
   function pickDay(d){
     var mo=cur(); if(!mo.avail[d]) return;
     document.querySelectorAll('td.day').forEach(function(td){ td.classList.toggle('active', +td.dataset.d===d); });
     sel=d; selF=null; var li=document.getElementById('fasce'); li.innerHTML='';
     jQuery.active++;
-    setTimeout(function(){ jQuery.active--; if(sel!==d) return; mo.avail[d].forEach(function(f){ var div=document.createElement('div');
+    setTimeout(function(){ jQuery.active--; if(sel!==d) return; li.innerHTML=''; mo.avail[d].forEach(function(f){ var div=document.createElement('div');
       div.className='fascia '+(f[1]>0?'':'notAvailableFascia'); div.innerHTML='<span>'+f[0]+'</span> ('+f[1]+')';
       div.onclick=function(){ if(f[1]<=0) return; document.querySelectorAll('.fascia').forEach(function(x){x.classList.remove('selected');});
         div.classList.add('selected'); selF=f[0]; }; li.appendChild(div); }); }, 300);
   }
   function nextMonth(){ m++; render(); }
+  function prevMonth(){ if(m>0){ m--; render(); } }
   function doBook(){
     if(!selF){ alert('Non è stata selezionata nessuna fascia! Selezionare una fascia e cliccare su PRENOTA'); return; }
     if(sel+'|'+selF===failSlot){

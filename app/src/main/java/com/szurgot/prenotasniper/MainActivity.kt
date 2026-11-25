@@ -44,6 +44,9 @@ import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import org.json.JSONArray
 import org.json.JSONObject
+import java.time.Instant
+import java.time.LocalDate
+import java.time.YearMonth
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.concurrent.atomic.AtomicBoolean
@@ -89,6 +92,21 @@ class MainActivity : AppCompatActivity() {
         }
 
         private const val PRENOTAMI = "prenotami.esteri.it"
+        /** New appointment day = release date + 169 days (24 weeks + 1 day). */
+        const val PREDICT_DAYS = 169L
+        const val MAX_MONTHS = 12
+        private val MONTHS = mapOf(
+            "gennaio" to 1, "febbraio" to 2, "marzo" to 3, "aprile" to 4, "maggio" to 5, "giugno" to 6,
+            "luglio" to 7, "agosto" to 8, "settembre" to 9, "ottobre" to 10, "novembre" to 11, "dicembre" to 12,
+            "january" to 1, "february" to 2, "march" to 3, "april" to 4, "may" to 5, "june" to 6,
+            "july" to 7, "august" to 8, "september" to 9, "october" to 10, "november" to 11, "december" to 12)
+
+        /** "marzo 2027" / "March 2027" -> 2027-03; null if not recognised. */
+        fun parseMonthLabel(label: String): YearMonth? {
+            val m = Regex("([A-Za-zÀ-ÿ]+)\\s+(\\d{4})").find(label.lowercase()) ?: return null
+            val mon = MONTHS[m.groupValues[1]] ?: return null
+            return YearMonth.of(m.groupValues[2].toInt(), mon)
+        }
         private const val CAPTURE_WINDOW_MS = 3 * 60_000L
     }
 
@@ -769,7 +787,14 @@ class MainActivity : AppCompatActivity() {
     inner class AutoBooker {
         private var gen = 0
         private var web: WebView? = null
-        private var months = 0
+        /** Calendar month currently shown, as an offset from the month the calendar opened on. */
+        private var curOff = 0
+        private var visited = 0
+        /** Month offsets still to visit: predicted month, the one after, then back towards today. */
+        private val plan = ArrayDeque<Int>()
+        private var baseYm: YearMonth? = null
+        private var predicted: LocalDate? = null
+        private var rechecked = false
         private val triedDays = HashSet<String>()
         private val triedFasce = HashSet<String>()
         private var attempts = 0
@@ -783,13 +808,94 @@ class MainActivity : AppCompatActivity() {
 
         fun start(w: WebView, why: String) {
             gen++
-            web = w; months = 0; attempts = 0; slotAlarmed = false
-            triedDays.clear(); triedFasce.clear(); handledModals.clear()
+            web = w; curOff = 0; visited = 0; attempts = 0; slotAlarmed = false; rechecked = false
+            triedDays.clear(); triedFasce.clear(); handledModals.clear(); plan.clear()
             running = true
-            log("AUTOBOOK START ($why) gen=$gen")
-            setStatus("★ On calendar — scanning for a free slot… ★")
+            predicted = predictedReleaseDay()
+            log("AUTOBOOK START ($why) gen=$gen predicted new day=$predicted")
+            setStatus("★ On calendar — jumping to the predicted day $predicted… ★")
             val g = gen
-            waitStable(g, null, null, 6000, 1500) { o -> scan(g, o, true) }
+            waitStable(g, null, null, 6000, 1500) { o -> makePlan(g, o) }
+        }
+
+        /**
+         * Each release seems to open ONE new Tue/Thu, 169 days (24 weeks + 1 day) after the release
+         * date (5 Oct -> 23 Mar, 16 Nov -> 4 May; docs/site-notes.md "Release pattern").
+         */
+        private fun predictedReleaseDay(): LocalDate {
+            val london = ZoneId.of("Europe/London")
+            val ref = if (releaseMs > 0 && nowC() - releaseMs in -60_000L..3_600_000L) releaseMs else nowC()
+            return Instant.ofEpochMilli(ref).atZone(london).toLocalDate().plusDays(PREDICT_DAYS)
+        }
+
+        private fun makePlan(g: Int, o: JSONObject?) {
+            if (g != gen) return
+            val label = o?.optString("month") ?: ""
+            val parsed = parseMonthLabel(label)
+            baseYm = parsed ?: YearMonth.now(ZoneId.of("Europe/London"))
+            val target = predicted?.let {
+                (it.year * 12 + it.monthValue) - (baseYm!!.year * 12 + baseYm!!.monthValue)
+            }?.coerceIn(0, MAX_MONTHS) ?: 0
+            // Predicted month, then the month after (in case the rule drifts later), then back
+            // towards today (cancellations; earlier dates are better).
+            val order = LinkedHashSet<Int>()
+            order.add(target)
+            if (target + 1 <= MAX_MONTHS) order.add(target + 1)
+            for (k in target - 1 downTo 0) order.add(k)
+            plan.clear(); plan.addAll(order)
+            log("AUTOBOOK PLAN opened on '$label' (parsed=$parsed) predicted=$predicted target=+$target order=$order")
+            visitNext(g, o)
+        }
+
+        private fun visitNext(g: Int, o: JSONObject?) {
+            if (g != gen) return
+            val off = plan.removeFirstOrNull()
+            if (off == null) {
+                stage("CAL_NO_AVAIL", "visited $visited months (predicted $predicted)")
+                snap("calendar_noavail")
+                running = false
+                setStatus("No free slot found (predicted day $predicted) — logged as evidence.")
+                return
+            }
+            if (off == curOff && visited == 0) { visited++; scan(g, o, true); return }
+            val t0 = System.currentTimeMillis()
+            navigate(g, off, o?.optString("sig") ?: "") {
+                log("AUTOBOOK moved to +$off in ${System.currentTimeMillis() - t0}ms")
+                waitStable(g, null, "sig", 5000, 600) { o2 -> visited++; scan(g, o2, true) }
+            }
+        }
+
+        /**
+         * Step the datepicker to month offset [off]. Between clicks we only wait until the month
+         * label has changed (not for each month's availability AJAX), so a 6-month jump costs
+         * ~1s instead of ~6s. The caller waits for jQuery to go idle on arrival; if the predicted
+         * day then looks missing, scan() reloads that month once in case a stale response won.
+         */
+        private fun navigate(g: Int, off: Int, fromSig: String, done: () -> Unit) {
+            if (g != gen) return
+            if (off == curOff) { done(); return }
+            val fwd = off > curOff
+            val before = fromSig
+            web?.evaluateJavascript(if (fwd) Js.NEXT_MONTH else Js.PREV_MONTH) { r ->
+                val res = decodeJs(r)
+                if (!(res.startsWith("NEXT") || res.startsWith("PREV"))) {
+                    fail("can't find ${if (fwd) "next" else "previous"}-month arrow: $res"); return@evaluateJavascript
+                }
+                curOff += if (fwd) 1 else -1
+                val start = System.currentTimeMillis()
+                val my = ++step
+                fun tick() {
+                    if (g != gen || my != step) return
+                    snapshot { o ->
+                        if (g != gen || my != step) return@snapshot
+                        val el = System.currentTimeMillis() - start
+                        val sig = o?.optString("sig") ?: ""
+                        if ((el >= 100 && sig != before) || el > 3000) navigate(g, off, sig, done)
+                        else ui.postDelayed({ tick() }, 60)
+                    }
+                }
+                ui.postDelayed({ tick() }, 60)
+            }
         }
 
         fun stop(reason: String) {
@@ -840,7 +946,7 @@ class MainActivity : AppCompatActivity() {
         private fun scan(g: Int, o: JSONObject?, logMonth: Boolean) {
             if (g != gen) return
             if (o == null || o.has("err")) { fail("calendar snapshot failed: ${o?.optString("err")}"); return }
-            val month = o.optString("month").ifEmpty { "m$months" }
+            val month = o.optString("month").ifEmpty { "m$curOff" }
             val days = o.optJSONArray("days") ?: JSONArray()
             val fasce = o.optJSONArray("fasce") ?: JSONArray()
             val dayList = (0 until days.length()).map { days.getJSONObject(it) }
@@ -849,7 +955,28 @@ class MainActivity : AppCompatActivity() {
                 log("CAL month='$month' bookable=${dayList.map { it.optString("d") + if (it.optBoolean("active")) "*" else "" }} " +
                     "fasce=${fasceList.map { it.optString("t") + if (it.optBoolean("na")) "[x]" else "" }} " +
                     "bookBtns=${o.optJSONArray("bookBtns")}")
-                snap("cal_$months")
+                snap("cal_$curOff")
+                val ym = baseYm?.plusMonths(curOff.toLong())
+                val p = predicted
+                if (p != null && ym != null && YearMonth.from(p) == ym) {
+                    val hit = dayList.any { it.optString("d") == p.dayOfMonth.toString() }
+                    stage("CAL_PREDICTED", "$p bookable=$hit label='$month' bookable days=${dayList.map { it.optString("d") }}" +
+                        if (rechecked) " (recheck)" else "")
+                    if (!hit && dayList.isEmpty() && !rechecked && curOff > 0) {
+                        // Fast transit may have let an older month's AJAX response land last: reload
+                        // this month (back one, wait, forward one, wait) before moving on.
+                        rechecked = true
+                        val here = curOff
+                        navigate(g, here - 1, o.optString("sig")) {
+                            waitStable(g, null, "sig", 4000, 300) { o1 ->
+                                navigate(g, here, o1?.optString("sig") ?: "") {
+                                    waitStable(g, null, "sig", 5000, 600) { o2 -> scan(g, o2, true) }
+                                }
+                            }
+                        }
+                        return
+                    }
+                }
             }
 
             val activeDay = dayList.firstOrNull { it.optBoolean("active") }?.optString("d") ?: "?"
@@ -862,8 +989,11 @@ class MainActivity : AppCompatActivity() {
             if (free.isNotEmpty()) { bookFascia(g, dayKey, free[0]); return }
             if (activeDay != "?") triedDays.add(dayKey)
 
-            // 2) Another bookable day in this month.
-            val nextDay = dayList.firstOrNull { "$month/${it.optString("d")}" !in triedDays }
+            // 2) Another bookable day in this month (the predicted day first).
+            val pDay = predicted?.takeIf { p -> baseYm?.plusMonths(curOff.toLong())?.let { YearMonth.from(p) == it } == true }
+                ?.dayOfMonth?.toString()
+            val untried = dayList.filter { "$month/${it.optString("d")}" !in triedDays }
+            val nextDay = untried.firstOrNull { it.optString("d") == pDay } ?: untried.firstOrNull()
             if (nextDay != null) {
                 val key = "$month/${nextDay.optString("d")}"
                 triedDays.add(key)
@@ -874,20 +1004,8 @@ class MainActivity : AppCompatActivity() {
                 return
             }
 
-            // 3) Next month.
-            months++
-            if (months > 12) {
-                stage("CAL_NO_AVAIL", "scanned ${months} months")
-                snap("calendar_noavail")
-                running = false
-                setStatus("No free slot in the next 12 months — logged as evidence.")
-                return
-            }
-            web?.evaluateJavascript(Js.NEXT_MONTH) { r ->
-                val res = decodeJs(r)
-                if (!res.startsWith("NEXT")) { fail("can't find next-month arrow: $res"); return@evaluateJavascript }
-                waitStable(g, o.optString("sig"), "sig", 5000, 600) { o2 -> scan(g, o2, true) }
-            }
+            // 3) Next month in the plan.
+            visitNext(g, o)
         }
 
         private fun bookFascia(g: Int, dayKey: String, f: JSONObject) {

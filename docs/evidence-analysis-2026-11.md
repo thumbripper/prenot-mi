@@ -117,6 +117,34 @@ before the real table exists. Fixes:
 Note that both sessions share one server session (one cookie jar), so the second session adds
 little and can interfere. Consider defaulting to **1** session until the cookies are separated.
 
+## v16: jump to the predicted day (25 Nov)
+
+The 5 Oct and 16 Nov calendars both put the newest configured day exactly 169 days after the
+release (see `site-notes.md`, *Release pattern*). On 16 Nov that day (4 May) was the only one with
+space, and 6s of a ~10s scan went on reaching it.
+
+v16's `AutoBooker`:
+- reads the month label ("marzo 2027"; Italian or English);
+- predicts the day: release date (London) + 169;
+- goes in this order: the predicted month, the month after, then back down to the current month.
+
+It clicks through the skipped months without waiting for their availability AJAX. Only on the
+target month does it wait for `jQuery.active == 0` and a stable DOM. If that month shows no open
+day, it reloads it once (back one month, then forward).
+
+Emulator results, with the mock calendar now relative to today and its AJAX answering for the month
+it was sent for:
+- predicted day present: arrived in 0.9s; failing slot, then booked at T+4.8s;
+- `nopred&cancel`: predicted month empty, rechecked, then +7, +5, +4, +3, where it booked the
+  cancellation;
+- `nopred`: all 8 months checked, then `CAL_NO_AVAIL` at T+11.5s.
+
+**To check after the next live run:**
+- `CAL_PREDICTED bookable=…`;
+- the real month label text;
+- whether fast month clicks work on the real datepicker (look at the `NET[` lines for the
+  calendar AJAX).
+
 ## 25 Nov 17:00 live run (v14): re-login loop, then too late
 
 Evidence: `evidence_20261125_1`. Timeline (T = 17:00:00 London):

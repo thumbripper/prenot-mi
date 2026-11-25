@@ -9,9 +9,23 @@ then on, with the default settings, it clicks BOOK, requests and fills the OTP, 
 free date and time slot on the calendar. Every attempt is logged with timestamps and screenshots as
 evidence that booking was impossible (for a "denial of justice" court filing).
 
-**Current version: v15** (see *What's new in v15* below). Status, known problems and the next steps are in
+**Current version: v16** (see *What's new in v16* below). Status, known problems and the next steps are in
 [`docs/evidence-analysis-2026-11.md`](docs/evidence-analysis-2026-11.md). What we know about the
 site's pages and DOM is in [`docs/site-notes.md`](docs/site-notes.md).
+
+## What's new in v16
+
+- **Auto-book jumps to the predicted new day.** Each release seems to open one new Tue/Thu, 169 days
+  (24 weeks + 1 day) after the release date (`docs/site-notes.md`, *Release pattern*).
+  - The calendar skips straight to that month without waiting for each month to load: about 1s for
+    6 months, where scanning took about 6s.
+  - It tries the predicted day first, then any other open day in that month.
+  - Then it checks the month after (in case the rule drifts later), then goes back month by month to
+    today (cancellations; earlier dates are better). It stops after 12 months.
+  - If the predicted month shows no open day, it is reloaded once, in case a late answer for a
+    skipped month overwrote it.
+- New log lines: `AUTOBOOK PLAN` (predicted day and month order), `STAGE CAL_PREDICTED` (whether the
+  prediction was right).
 
 ## What's new in v15
 
@@ -73,8 +87,9 @@ Fixes from the 25 Nov live run (see the analysis doc):
 4. **Booking form reached ("SUCCESS").** The phone vibrates, the page is dumped to the log, and the
    OTP step runs if enabled: click SEND NEW CODE → `OtpListenerService` reads the code from the
    Gmail notification → fill → tick the privacy box → FORWARD.
-5. **Calendar** (`/BookingCalendar`). If auto-book is on, it scans up to 9 months for a bookable
-   day and free time slot, then clicks BOOK. It screenshots and dumps every month.
+5. **Calendar** (`/BookingCalendar`). If auto-book is on, it jumps to the predicted new day
+   (release + 169 days), then the month after, then back to today. It books the first free time slot
+   found and screenshots and dumps every month it checks.
 6. **Evidence.** `log.txt` and PNGs are saved in the app's external files dir under `evidence/`.
 
 ## Code map
@@ -142,7 +157,9 @@ SDK adb `%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe`.
 3. Start the app on `file:///android_asset/mock/services.html?reset=<new token>&sold=2` (the
    citizenship row is sold out for the first 2 clicks; add `&redir=1` to send the first click to
    `/UserArea`, as seen live on 25 Nov) and tap SNIPE NOW. Or start it on
-   `file:///android_asset/mock/BookingCalendar.html` to test auto-book on its own.
+   `file:///android_asset/mock/BookingCalendar.html` to test auto-book on its own. The mock calendar
+   is relative to today: the new day is today + 169 days. `?nopred=1` removes it, and `?cancel=1`
+   adds a cancellation in month +3.
 4. Inject the OTP: `adb shell "cmd notification post -t 'Prenot@mi' tag1 'Your OTP Code:123456'"`.
 5. Read `/sdcard/Android/data/com.szurgot.prenotasniper.debug/files/evidence/log.txt`.
 

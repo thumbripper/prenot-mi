@@ -232,6 +232,20 @@ object Js {
         })();
     """.trimIndent()
 
+    /** Previous month: datepicker "prev" header cell, else an exact '<' element. */
+    val PREV_MONTH = """
+        (function(){
+          try{ $HELPERS
+            var e=document.querySelector('.datepicker-days th.prev,th.prev,.datepicker th.prev');
+            if(e){ __tap(e); return 'PREV|th.prev'; }
+            var els=document.querySelectorAll('th,a,button,span');
+            for(var i=0;i<els.length;i++){ var t=(els[i].innerText||'').trim();
+              if((t==='<'||t==='‹'||t==='«') && !__inChrome(els[i])){ __tap(els[i]); return 'PREV|'+els[i].tagName+'.'+els[i].className; } }
+            return 'NOPREV|';
+          }catch(x){ return 'ERR|'+x; }
+        })();
+    """.trimIndent()
+
     /** Visible modal/dialog texts as JSON array. */
     val MODALS = """
         (function(){

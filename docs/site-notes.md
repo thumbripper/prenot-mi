@@ -70,6 +70,26 @@ new. Last confirmed: November 2026 (v13 logs).
 - The BOOK button is a blue button below the legend. **Its exact selector is still unknown.** The
   site header also contains a "Book" nav link, so never match on "contains 'book'".
 
+## Release pattern (which dates come out)
+
+Only two calendar views exist so far, and they agree exactly:
+
+| Release | Last configured day seen | Gap |
+|---|---|---|
+| Mon 5 Oct 2026 (photo `calendar_20261005.jpeg`) | Tue 23 Mar 2027 | 169 days = 24 weeks + 1 day |
+| Mon 16 Nov 2026 (v13 dump) | Tue 4 May 2027: the only open day; 3 of 4 slots free at T+10s | 169 days = 24 weeks + 1 day |
+
+- Appointment days are only **Tuesdays and Thursdays**. Every earlier configured day was full (red,
+  all slots `(0)`): no cancellations showed up.
+- Hypothesis: **each release opens one new day, 24 weeks + 1 day ahead**. A Monday release opens the
+  Tuesday; a Wednesday release opens the Thursday (not yet seen). That day has ~4 slots of 1 place.
+- Predicted: Wed 25 Nov -> Thu 13 May 2027; Mon 30 Nov -> Tue 18 May; Wed 2 Dec -> Thu 20 May.
+- So the target is about **6 months ahead** (month +6 in the calendar). Scanning from the current month
+  cost ~6s on 16 Nov.
+- v16 jumps straight there and logs `STAGE CAL_PREDICTED <date> bookable=true|false`. **Check that
+  line after each run** and correct `PREDICT_DAYS` in `MainActivity` if the rule is off. The
+  Wednesday rule is still unconfirmed.
+
 ## Anti-bot / infrastructure
 
 - Cloudflare Turnstile (`challenges.cloudflare.com/turnstile`), the "GOOGLE CAPTCHA ENTERPRISE"
