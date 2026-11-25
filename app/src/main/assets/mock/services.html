@@ -19,35 +19,38 @@
 </style>
 </head>
 <body>
-  <h2>Servizi erogati dalla sede — (MOCK)</h2>
-  <p>Scegli il servizio che vuoi prenotare e premi "Prenota".</p>
+  <!-- Mock of the real services list. The citizenship row is "sold out" for the first
+       N clicks (localStorage counter, default 2; ?sold=N to change), then opens the booking
+       page. Reset the counter with ?reset=1. -->
+  <h2>Services provided by the Embassy/Consulate (MOCK)</h2>
   <table>
-    <tr><th>Categoria</th><th>Servizio</th><th>Prenotazione</th></tr>
+    <tr><th>Type</th><th>Service</th><th>Description</th><th>Booking</th></tr>
     <tr>
-      <td>CITTADINANZA</td>
-      <td>Cittadinanza per discendenza (non disp.)</td>
-      <td><a class="book" href="/Services/Booking/102" onclick="showSold();return false;">Prenota</a></td>
+      <td>CITIZENSHIP</td><td>Citizenship by descent</td><td>Citizenship by Birth</td>
+      <td><a class="book" href="/Services/Booking/101" onclick="book();return false;">BOOK</a></td>
     </tr>
     <tr>
-      <td>CITTADINANZA</td>
-      <td>Cittadinanza TEST — posti liberi</td>
-      <td><a class="book" href="/Services/Booking/101" onclick="location.href='Services/Booking/101.html';return false;">Prenota</a></td>
-    </tr>
-    <tr>
-      <td>STATO CIVILE</td>
-      <td>Pubblicazioni di matrimonio</td>
-      <td><a class="book" href="/Services/Booking/200" onclick="showSold();return false;">Prenota</a></td>
+      <td>AIRE AND CIVIL STATUS</td><td>Registry office</td><td>Marriage banns</td>
+      <td><a class="book" href="/Services/Booking/200" onclick="showSold();return false;">BOOK</a></td>
     </tr>
   </table>
 
-  <!-- Sold-out modal, mimicking the real prenotami wording -->
   <div id="modal">
-    <p>Stante l'elevata richiesta i posti disponibili per il servizio scelto sono esauriti.</p>
+    <p>All appointments for this service are currently booked. New appointments will be released soon.</p>
     <button class="confirm" onclick="document.getElementById('modal').style.display='none'">OK</button>
   </div>
 
 <script>
+  var qs = new URLSearchParams(location.search);
+  if (qs.get('reset')) localStorage.removeItem('mockClicks');
+  if (qs.get('sold')) localStorage.setItem('mockSold', qs.get('sold'));
   function showSold(){ document.getElementById('modal').style.display='block'; }
+  function book(){
+    var n = +(localStorage.getItem('mockClicks')||0) + 1;
+    localStorage.setItem('mockClicks', n);
+    var sold = +(localStorage.getItem('mockSold')||2);
+    if (n <= sold) showSold(); else location.href = 'Services/Booking/101.html';
+  }
 </script>
 </body>
 </html>

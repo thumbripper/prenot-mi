@@ -6,17 +6,23 @@ import android.graphics.Canvas
 import android.view.View
 import java.io.File
 import java.io.FileOutputStream
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.concurrent.Executors
 
 /**
- * Appends attempt records to evidence/log.txt and saves PNG screenshots.
+ * Appends attempt records to evidence/log.txt, saves PNG screenshots and HTML snapshots.
  * The timestamped log doubles as evidence for a "denial of justice" court filing.
+ *
+ * Thread-safe: log() is called from the UI thread, JS-bridge threads, the NTP thread and the
+ * notification listener. Heavy work (PNG encode, HTML write) runs on a single background thread.
  */
 object Logger {
-    private val ts = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.UK)
-    private val fileTs = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.UK)
+    private val ts = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS").withZone(ZoneId.systemDefault())
+    private val fileTs = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss_SSS").withZone(ZoneId.systemDefault())
+    private val io = Executors.newSingleThreadExecutor()
+    private const val MAX_LOG_BYTES = 5_000_000L
 
     private fun dir(ctx: Context): File {
         val d = File(ctx.getExternalFilesDir(null), "evidence")
@@ -24,25 +30,53 @@ object Logger {
         return d
     }
 
+    @Synchronized
     fun log(ctx: Context, line: String) {
-        val stamped = "${ts.format(Date())}  $line\n"
+        val stamped = "${ts.format(Instant.now())}  $line\n"
         try {
-            FileOutputStream(File(dir(ctx), "log.txt"), true).use { it.write(stamped.toByteArray()) }
+            val f = File(dir(ctx), "log.txt")
+            if (f.length() > MAX_LOG_BYTES) {
+                f.renameTo(File(dir(ctx), "log_${fileTs.format(Instant.now())}.txt"))
+            }
+            FileOutputStream(f, true).use { it.write(stamped.toByteArray()) }
         } catch (_: Exception) {
         }
     }
 
-    /** Draw the WebView to a bitmap and save it as timestamped proof of the state. */
+    /** Draw [view] to a bitmap (must be called on the UI thread); encode + save off-thread. */
     fun screenshot(ctx: Context, view: View, tag: String) {
         try {
             if (view.width == 0 || view.height == 0) return
             val bmp = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
             view.draw(Canvas(bmp))
-            val f = File(dir(ctx), "${fileTs.format(Date())}_$tag.png")
-            FileOutputStream(f).use { bmp.compress(Bitmap.CompressFormat.PNG, 90, it) }
+            val f = File(dir(ctx), "${fileTs.format(Instant.now())}_${safe(tag)}.png")
+            io.execute {
+                try {
+                    FileOutputStream(f).use { bmp.compress(Bitmap.CompressFormat.PNG, 90, it) }
+                } catch (_: Exception) {
+                } finally {
+                    bmp.recycle()
+                }
+            }
         } catch (_: Exception) {
         }
     }
+
+    /** Save a page snapshot to evidence/html/<ts>_<tag>.html (off-thread). */
+    fun saveHtml(ctx: Context, tag: String, html: String) {
+        val name = "${fileTs.format(Instant.now())}_${safe(tag)}.html"
+        io.execute {
+            try {
+                val d = File(dir(ctx), "html")
+                if (!d.exists()) d.mkdirs()
+                File(d, name).writeText(html)
+            } catch (_: Exception) {
+            }
+        }
+        log(ctx, "HTML SAVED html/$name (${html.length} chars)")
+    }
+
+    private fun safe(tag: String) = tag.replace(Regex("[^A-Za-z0-9_\\-]"), "_").take(40)
 
     fun evidencePath(ctx: Context): String = dir(ctx).absolutePath
 

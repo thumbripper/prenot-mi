@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Calendar Prenot@mi (MOCK)</title>
+<style>
+  body{font-family:sans-serif;margin:0;padding:12px} td.day{padding:6px;text-align:center}
+  td.disabled{color:#aaa} td.notAvailableDay{background:#f00;color:#fff} td.active{background:#337ab7;color:#fff}
+  .fascia{margin:10px;padding:6px} .notAvailableFascia{color:#f00} .fascia.selected{outline:2px solid green}
+  #btnBook{background:#0b57a4;color:#fff;padding:10px 30px;border:0;margin-top:12px}
+</style>
+</head>
+<body class="loggedin">
+  <!-- Mock of /BookingCalendar mirroring the real DOM classes (docs/site-notes.md).
+       Availability is applied ~700ms after each render (like the real AJAX).
+       Month 0: nothing configured. Month 1: red (full) days only.
+       Month 2: day 12 has a free slot that fails at BOOK ("no longer available");
+                day 14 has a free slot that succeeds (confirm() -> Reservation page). -->
+  <header class="header"><nav class="top-nav"><a href="/Services">Book</a> <a href="#">My appointments</a></nav></header>
+  <h2>Citizenship by Birth</h2>
+  <table id="cal">
+    <thead><tr><th class="prev">&lt;</th><th class="picker-switch" id="sw"></th><th class="next" onclick="nextMonth()">&gt;</th></tr></thead>
+    <tbody id="body"></tbody>
+  </table>
+  <div class="events-content"><ul><li class="selected" id="fasce"></li></ul></div>
+  <div>Available / Not available / Day selected / Days not configured</div>
+  <button id="btnBook" type="button" onclick="doBook()">BOOK</button>
+<script>
+  var M=[{name:'novembre 2026',n:30,full:[],avail:{}},
+         {name:'dicembre 2026',n:31,full:[1,3,8,10],avail:{}},
+         {name:'gennaio 2027',n:31,full:[5,7],avail:{12:[['10:15 - 10:30',0],['10:45 - 11:00',1]],14:[['10:31 - 10:44',2]]}}];
+  var m=0, sel=null, selF=null, failSlot='12|10:45 - 11:00';
+  window.jQuery={active:0};   // mimic jQuery's in-flight AJAX counter
+  function cur(){ return M[m] || (M[m]={name:'mese +'+m,n:30,full:[],avail:{}}); }
+  function render(){
+    var mo=cur(); document.getElementById('sw').innerText=mo.name;
+    var b=document.getElementById('body'); b.innerHTML=''; var tr;
+    for(var d=1; d<=mo.n; d++){ if((d-1)%7===0){ tr=document.createElement('tr'); b.appendChild(tr); }
+      var td=document.createElement('td'); td.className='day'; td.innerText=d; td.dataset.d=d;
+      td.onclick=function(){ pickDay(+this.dataset.d); }; tr.appendChild(td); }
+    document.getElementById('fasce').innerHTML=''; sel=null; selF=null;
+    jQuery.active++; setTimeout(function(){ jQuery.active--; applyAvail(); }, 700);   // "AJAX"
+  }
+  function applyAvail(){
+    var mo=cur(), first=null;
+    document.querySelectorAll('td.day').forEach(function(td){ var d=+td.dataset.d;
+      if(mo.avail[d]){ td.className='day'; if(first===null) first=d; }
+      else if(mo.full.indexOf(d)>=0) td.className='day disabled notAvailableDay';
+      else td.className='day disabled'; });
+    if(first!==null) pickDay(first);
+  }
+  function pickDay(d){
+    var mo=cur(); if(!mo.avail[d]) return;
+    document.querySelectorAll('td.day').forEach(function(td){ td.classList.toggle('active', +td.dataset.d===d); });
+    sel=d; selF=null; var li=document.getElementById('fasce'); li.innerHTML='';
+    jQuery.active++;
+    setTimeout(function(){ jQuery.active--; if(sel!==d) return; mo.avail[d].forEach(function(f){ var div=document.createElement('div');
+      div.className='fascia '+(f[1]>0?'':'notAvailableFascia'); div.innerHTML='<span>'+f[0]+'</span> ('+f[1]+')';
+      div.onclick=function(){ if(f[1]<=0) return; document.querySelectorAll('.fascia').forEach(function(x){x.classList.remove('selected');});
+        div.classList.add('selected'); selF=f[0]; }; li.appendChild(div); }); }, 300);
+  }
+  function nextMonth(){ m++; render(); }
+  function doBook(){
+    if(!selF){ alert('Non è stata selezionata nessuna fascia! Selezionare una fascia e cliccare su PRENOTA'); return; }
+    if(sel+'|'+selF===failSlot){
+      alert('La fascia selezionata non è più disponibile');
+      cur().avail[sel].forEach(function(f){ if(f[0]===selF) f[1]=0; });
+      pickDay(sel); return;
+    }
+    if(confirm('Confermi la prenotazione per il giorno '+sel+' '+selF+'?')) location.href='Reservation.html';
+  }
+  render();
+</script>
+</body>
+</html>

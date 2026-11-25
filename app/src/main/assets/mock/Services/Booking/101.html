@@ -1,21 +1,34 @@
 <!doctype html>
-<html lang="it">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Prenotami MOCK — Prenotazione</title>
-<style>
-  body { font-family: sans-serif; background:#e9e9e9; margin:0; padding:16px; }
-  .card { background:#fff; padding:20px; }
-</style>
+<title>Booking Prenot@mi (MOCK)</title>
+<style> body { font-family: sans-serif; margin:0; padding:16px; } .card{background:#fff;padding:16px} </style>
 </head>
-<body>
-  <!-- Mock of an AVAILABLE booking page. URL contains /Services/Booking/ and it
-       STAYS here (no bounce), with a visible calendar -> app should hand over. -->
+<body class="loggedin">
+  <!-- Mock of the real booking form (see docs/site-notes.md). The OTP must be requested with
+       SEND NEW CODE; the expected code is 123456. FORWARD -> BookingCalendar. -->
+  <header class="header"><nav class="top-nav"><a href="/Services">Book</a> <a href="#">Home</a></nav></header>
   <div class="card">
-    <h2>Prenotazione — scegli data e ora</h2>
-    <input type="date" id="thedate">
-    <select name="ora"><option>09:00</option><option>10:00</option></select>
+    <h2>Citizenship by Birth</h2>
+    <p>Booking information</p>
+    <label>Booking Type <select><option>Individual booking</option></select></label>
+    <p>Notes for the Embassy/Consulate <textarea></textarea></p>
+    <p>OTP <input type="text" id="otp-input" name="otp" maxlength="6">
+       <button type="button" id="otp-send" onclick="console.log('mock: otp sent')">SEND NEW CODE</button></p>
+    <p><input type="checkbox" id="PrivacyCheck"> <label for="PrivacyCheck">I have read and accept the Privacy Policy</label></p>
+    <input type="hidden" name="cf-turnstile-response" id="ts" value="">
+    <button type="button" onclick="history.back()">BACK TO LIST</button>
+    <button type="button" id="fwd" onclick="forward()">FORWARD</button>
   </div>
+<script>
+  setTimeout(function(){ document.getElementById('ts').value='mock-turnstile-token'; }, 400);
+  function forward(){
+    if(!document.getElementById('PrivacyCheck').checked){ alert('Accept the privacy policy'); return; }
+    if(document.getElementById('otp-input').value!=='123456'){ alert('Incorrect Code!'); return; }
+    location.href='../../BookingCalendar.html';
+  }
+</script>
 </body>
 </html>

@@ -63,9 +63,12 @@ class Prefs(ctx: Context) {
         get() = sp.getBoolean("armed", false)
         set(v) = sp.edit().putBoolean("armed", v).apply()
 
-    /** How many WebView sessions to fire concurrently per wave (1-4). */
+    /**
+     * How many WebView sessions to fire concurrently per wave (1-4). All sessions share one
+     * cookie jar (= one Prenot@mi server session), so extra sessions add little; default 1.
+     */
     var parallelSessions: Int
-        get() = sp.getInt("parallelSessions", 2).coerceIn(1, 4)
+        get() = sp.getInt("parallelSessions", 1).coerceIn(1, 4)
         set(v) = sp.edit().putInt("parallelSessions", v.coerceIn(1, 4)).apply()
 
     /** Auto-switch the Prenot@mi site to English after login. */
@@ -82,4 +85,14 @@ class Prefs(ctx: Context) {
     var autoBook: Boolean
         get() = sp.getBoolean("autoBook", true)
         set(v) = sp.edit().putBoolean("autoBook", v).apply()
+
+    /** Play an alarm-stream sound at key moments (calendar reached, free slot seen, booked, problems). */
+    var alarmSound: Boolean
+        get() = sp.getBoolean("alarmSound", true)
+        set(v) = sp.edit().putBoolean("alarmSound", v).apply()
+
+    /** Log the calendar page's XHR/fetch traffic (document-start hook, /BookingCalendar only). */
+    var netCapture: Boolean
+        get() = sp.getBoolean("netCapture", true)
+        set(v) = sp.edit().putBoolean("netCapture", v).apply()
 }

@@ -1,0 +1,62 @@
+# Prenot@mi site notes (London consulate)
+
+Facts about the live site learned from real runs. Update this file whenever a dump shows something
+new. Last confirmed: November 2026 (v13 logs).
+
+## Flow and URLs
+
+1. `https://prenotami.esteri.it/`: homepage with the login button. Hitting `/Login` cold returns
+   HTTP 500, so always start at the homepage.
+2. Login happens on `https://iam.esteri.it/signin/...` (OAuth2, client `prenotami-fo`), then
+   redirects to `/UserArea`. The session cookie persists in the WebView.
+3. `/Services`: a DataTables list of services. Our row: **CITIZENSHIP / Citizenship by descent /
+   Citizenship by Birth**, BOOK link `href` contains **`/Services/Booking/422`** (the same in ITA
+   and ENG).
+   - Before release, or when sold out, clicking BOOK shows a modal on `/Services`:
+     **"All appointments for this service are currently …"** (English UI). The older strings
+     `sold out` / `high demand` / `esaurit` were not seen in v13 runs.
+4. `/Services/Booking/422`: the booking form. Body text in English:
+   `Booking Type: Individual booking · Notes for the Embassy/Consulate · OTP · SEND NEW CODE ·
+   Privacy Policy [checkbox] I have read and accept the Privacy Policy · BACK TO LIST · FORWARD`.
+   - The OTP is **not** sent automatically: "SEND NEW CODE" must be clicked. Each click invalidates
+     the previous code, and a wrong code gives the JS alert `Incorrect Code!`.
+   - The OTP arrives by email from Prenot@mi; the body contains `OTP Code:NNNNNN` (6 digits).
+     Gmail delivery is usually ~5s and once took ~2 min.
+   - Cloudflare Turnstile runs on this page (`turnstileCallback` appears in the console ~0.1s
+     after SEND NEW CODE).
+5. FORWARD then goes either to
+   `/BookingCalendar?selectedService=Citizenship%20by%20Birth` or back to `/Services`
+   (seen 11 and 23 Nov; the reason isn't captured yet).
+
+## Calendar DOM (`/BookingCalendar`)
+
+- Built by `/Content/js/Calendar/ManageCalendar.js` with a bootstrap/moment datetimepicker.
+  Availability arrives by AJAX (`success` handler → `CostruisciTimelineOrizzontale`), so content
+  appears some time after `onPageFinished`. The first dump right at load was empty; ~1s later it
+  was populated.
+- Month header like `novembre 2026` (always Italian), with `<` / `>` arrows.
+- Day cells are `<td>` elements with classes:
+  - `day old` / `day new`: days from the neighbouring months (ignore)
+  - `day disabled`: not configured for this service (grey)
+  - `day weekend disabled`
+  - `day disabled notAvailableDay`: configured but **full** (red, `bg rgb(255,0,0)`)
+  - **`day active`** (no `disabled`, blue `rgb(51,122,183)`): **bookable, and auto-selected** by
+    the site when the month renders. This is what to look for.
+  - `day active today disabled`: today
+- Legend: green = Available, red = Not available, blue = Day selected, grey = Days not configured.
+- Time slots ("fasce") for the selected day, below the calendar inside
+  `div.events-content > li.selected`:
+  - `<div class="fascia notAvailableFascia">10:15 - 10:30 (0)</div>`: full
+  - **`<div class="fascia ">10:45 - 11:00 (1)</div>`**: free, `(n)` = places left
+  - Seen times: 10:15–10:30, 10:31–10:44, 10:45–11:00, 11:01–11:29, 11:30–11:45.
+- Configured days seen: Tuesdays and Thursdays. On 16 Nov at T+17s, Mar/Apr 2027 were all red and
+  **4 May 2027 was bookable with 3 free slots**.
+- The BOOK button is a blue button below the legend. **Its exact selector is still unknown.** The
+  site header also contains a "Book" nav link, so never match on "contains 'book'".
+
+## Anti-bot / infrastructure
+
+- Cloudflare Turnstile (`challenges.cloudflare.com/turnstile`), the "GOOGLE CAPTCHA ENTERPRISE"
+  marker, and a bot-manager script `/<uuid>/stormcaster.js` with `__uzdbm_*` variables.
+- Under load the site returns HTTP 502/503 for a few seconds (seen at 16:58 on 9 Nov).
+- Matomo analytics; lots of harmless console noise (`Error: x`, Permissions-Policy, CSP `data:,`).

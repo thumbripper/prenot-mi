@@ -12,12 +12,16 @@ object OtpHolder {
 }
 
 /**
- * Reads OTP codes out of incoming notifications (e.g. the Gmail notification the
- * Prenot@mi OTP email produces). Requires the user to grant "Notification access".
+ * Reads notifications for Prenot@mi emails (via Gmail). Every Prenot@mi-related notification is
+ * logged in full (title + text) — the booking-confirmation email is the ground truth that a
+ * booking succeeded. Only notifications that mention an OTP update [OtpHolder], so a booking
+ * reference number in a confirmation email can never be mistaken for a code.
+ * Requires the user to grant "Notification access".
  */
 class OtpListenerService : NotificationListenerService() {
 
     private val digits = Regex("\\d{4,8}")
+    private val keyedRe = Regex("(?:otp|code|codice)\\D{0,12}(\\d{4,8})", RegexOption.IGNORE_CASE)
 
     override fun onNotificationPosted(sbn: StatusBarNotification?) {
         try {
@@ -31,15 +35,15 @@ class OtpListenerService : NotificationListenerService() {
             if (blob.isBlank()) return
 
             val low = blob.lowercase()
-            // Only Prenot@mi OTP emails — avoids grabbing numbers from unrelated mail
-            // (previously any Gmail notification matched, which was noisy and a privacy leak).
             val relevant = low.contains("prenot") || low.contains("otp code") ||
                 low.contains("codice otp") || low.contains("esteri")
             if (!relevant) return
 
+            Logger.log(applicationContext, "PRENOTAMI NOTIF from $pkg: ${blob.replace('\n', ' ').take(600)}")
+
+            if (!low.contains("otp")) return
             // Prefer a code right after an OTP keyword, e.g. "OTP Code:621941".
-            val keyed = Regex("(?:otp|code|codice)\\D{0,12}(\\d{4,8})", RegexOption.IGNORE_CASE)
-                .find(blob)?.groupValues?.getOrNull(1)
+            val keyed = keyedRe.find(blob)?.groupValues?.getOrNull(1)
             val found = digits.findAll(blob).map { it.value }.toList()
             val code = keyed
                 ?: found.firstOrNull { it.length == 6 }
