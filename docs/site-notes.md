@@ -9,12 +9,24 @@ new. Last confirmed: November 2026 (v13 logs).
    HTTP 500, so always start at the homepage.
 2. Login happens on `https://iam.esteri.it/signin/...` (OAuth2, client `prenotami-fo`), then
    redirects to `/UserArea`. The session cookie persists in the WebView.
+   - **The session expires when idle.** On 25 Nov a 16:13 login had expired by 16:59, and
+     `/Services` redirected to `/Home?ReturnUrl=%2fServices`, which is the logged-out signal.
+     v15 reloads `/Services` at T-10 and T-5 min to keep the session alive, and checks it at T-3 min.
 3. `/Services`: a DataTables list of services. Our row: **CITIZENSHIP / Citizenship by descent /
    Citizenship by Birth**, BOOK link `href` contains **`/Services/Booking/422`** (the same in ITA
    and ENG).
    - Before release, or when sold out, clicking BOOK shows a modal on `/Services`:
-     **"All appointments for this service are currently …"** (English UI). The older strings
-     `sold out` / `high demand` / `esaurit` were not seen in v13 runs.
+     **"All appointments for this service are currently booked."** (English UI). It is a
+     **jquery-confirm** popup (`/Content/jquery-confirm.css`, `.jconfirm-box`). The text also sits in a
+     hidden input on every `/Services` page:
+     `<input id="WlNotAvailable" type="hidden" value="All appointments for this service are currently booked.">`.
+     Because it's an input `value`, it isn't in `innerText`, so matching body text is safe. The older
+     strings `sold out` / `high demand` / `esaurit` were not seen in v13 runs.
+   - **At release, BOOK can redirect to `/UserArea`** (25 Nov, click at T+18ms):
+     `/Services/Booking/422` loaded, then `/UserArea` loaded twice (ITA, then ENG). There was no
+     popup, so v14 waited the full 7s timeout. v15 treats any non-`/Services` page after the click as
+     `REDIRECT` and retries after 200ms. The reason is unknown (perhaps the service wasn't open yet,
+     at T+18ms).
 4. `/Services/Booking/422`: the booking form. Body text in English:
    `Booking Type: Individual booking · Notes for the Embassy/Consulate · OTP · SEND NEW CODE ·
    Privacy Policy [checkbox] I have read and accept the Privacy Policy · BACK TO LIST · FORWARD`.
@@ -24,9 +36,13 @@ new. Last confirmed: November 2026 (v13 logs).
      Gmail delivery is usually ~5s and once took ~2 min.
    - Cloudflare Turnstile runs on this page (`turnstileCallback` appears in the console ~0.1s
      after SEND NEW CODE).
-5. FORWARD then goes either to
-   `/BookingCalendar?selectedService=Citizenship%20by%20Birth` or back to `/Services`
-   (seen 11 and 23 Nov; the reason isn't captured yet).
+5. FORWARD first shows a JS `confirm()`: *"Do you want to confirm this appointment? Individual
+   booking. You are booking for 1 Appointment <name>"*. The app accepts it. The page then goes either
+   to `/BookingCalendar?selectedService=Citizenship%20by%20Birth` or back to `/Services`.
+   - **The bounce to `/Services` means sold out.** On 25 Nov (FORWARD at T+13.2s) `/Services`
+     reloaded with the jquery-confirm popup **"All appointments for this service are currently
+     booked."** (screenshot `bounce_1200`). So passing the OTP is not enough: the availability
+     check happens again at FORWARD. Speed to FORWARD is what matters (seen 11, 23 and 25 Nov).
 
 ## Calendar DOM (`/BookingCalendar`)
 

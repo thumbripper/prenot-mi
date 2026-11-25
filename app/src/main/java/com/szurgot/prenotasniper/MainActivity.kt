@@ -72,6 +72,11 @@ object SnipeGuard {
     fun ownerId() = owner
 }
 
+/** Pre-release steps already done, keyed "<releaseMs>/<step>" — survives activity recreation. */
+object PreRelease {
+    val done: MutableSet<String> = java.util.Collections.synchronizedSet(HashSet())
+}
+
 class MainActivity : AppCompatActivity() {
 
     companion object {
@@ -116,8 +121,13 @@ class MainActivity : AppCompatActivity() {
     private var countdownRunnable: Runnable? = null
     private var fireRunnable: Runnable? = null
     private var releaseMs = 0L
-    private var prewarmed = false
     private var sessionCheckPending = false
+    /** Set after a "session expired" warning; cleared when a logged-in prenotami page loads. */
+    private var awaitingLogin = false
+
+    private fun isLoggedOutUrl(u: String) =
+        u.contains("ReturnUrl", true) || u.contains("iam.esteri.it", true) ||
+            (Uri.parse(u).path ?: "").startsWith("/Home", true) || u.contains("/Account/Login", true)
     private var ringtone: Ringtone? = null
 
     private val autoBooker = AutoBooker()
@@ -422,17 +432,26 @@ class MainActivity : AppCompatActivity() {
             s.web.evaluateJavascript(Js.snapshotHtml("load_" + path.trim('/').replace('/', '_')), null)
         }
 
-        // T-60s session check (pre-warm load of /Services)
+        // Pre-release session check (load of /Services at T-3min / T-20s).
         if (sessionCheckPending && s.index == 0) {
             sessionCheckPending = false
-            val expired = u.contains("ReturnUrl", true) || u.contains("iam.esteri.it", true) ||
-                !u.contains("/Services", true)
-            if (expired) {
+            if (isLoggedOutUrl(u)) {
                 stage("SESSION_EXPIRED", u)
+                awaitingLogin = true
                 alarm("login", 6000)
-                setStatus("⚠ LOG IN NOW — session expired before release ($u)")
+                val left = (releaseMs - nowC()) / 1000
+                setStatus("⚠ LOG IN NOW (${left}s to release) — the app won't navigate away while you log in.")
                 primary.bringToFront()
-            } else log("SESSION OK (pre-warm) $u")
+            } else log("SESSION OK $u")
+        }
+        // Login finished after an expiry warning: land on the services list, ready to fire.
+        if (awaitingLogin && s.index == 0 && onPrenotami && !isLoggedOutUrl(u)) {
+            awaitingLogin = false
+            log("LOGIN OK after expiry warning: $u")
+            if (!sniping && path.startsWith("/UserArea", true) && releaseMs - nowC() > 1500) {
+                setStatus("Logged in ✓ — opening the services list, ready to fire.")
+                s.web.loadUrl(prefs.serviceUrl)
+            }
         }
 
         // After FORWARD: calendar or bounce.
@@ -447,6 +466,12 @@ class MainActivity : AppCompatActivity() {
         if (!sniping && s.index == 0 && prefs.forceEnglish && !englishEnsured && onPrenotami) ensureEnglish(s.web, u)
 
         if (!sniping) return
+        // After the click the site sent us somewhere other than the services list or the booking
+        // form (25 Nov: Booking/422 -> /UserArea, which wasted a 7s timeout). Decide now.
+        if (s.clickedAt > 0 && !s.resultHandled && !path.contains("/Services", true)) {
+            if (isLoggedOutUrl(u)) sessionOutcome(s, "LOGGED_OUT", u) else sessionOutcome(s, "REDIRECT", u)
+            return
+        }
         val isServices = u.contains("/Services", ignoreCase = true) && !u.contains("/Booking/")
         if (s.awaitingLoad && isServices) {
             s.awaitingLoad = false
@@ -565,12 +590,19 @@ class MainActivity : AppCompatActivity() {
             when {
                 sessions.all { it.lastRes == "NO_SERVICE" } ->
                     stopSnipe("Service not found. Long-press SNIPE to pick the service, or set the keyword in SETTINGS.")
+                sessions.any { it.lastRes == "LOGGED_OUT" } -> {
+                    alarm("login", 6000)
+                    awaitingLogin = true
+                    stopSnipe("⚠ Logged out during the snipe — LOG IN and press SNIPE NOW.")
+                    primary.bringToFront()
+                }
                 sessions.any { it.lastRes == "LOAD_TIMEOUT" } && sessions.all { it.lastRes == "LOAD_TIMEOUT" } && wave >= 3 -> {
                     alarm("login", 5000)
                     stopSnipe("Pages never loaded the services list 3× — logged out? Log in and retry.")
                 }
                 wave < prefs.retries -> {
-                    val delay = if (sessions.any { it.lastRes == "HTTP5XX" }) 300L else prefs.retryIntervalMs.toLong()
+                    val delay = if (sessions.any { it.lastRes == "HTTP5XX" || it.lastRes == "REDIRECT" }) 200L
+                        else prefs.retryIntervalMs.toLong()
                     ui.postDelayed({ fireWave() }, delay)
                 }
                 else -> stopSnipe("No slot after ${prefs.retries} waves × ${sessions.size} session(s). Logged as evidence.")
@@ -1128,7 +1160,6 @@ class MainActivity : AppCompatActivity() {
         if (delay in -1500..(15 * 60 * 1000L)) {
             cancelCountdown()
             releaseMs = rMs
-            prewarmed = false
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             ui.postDelayed({ window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }, delay.coerceAtLeast(0) + 10 * 60_000L)
             log("COUNTDOWN armed #$instanceId release=${release} in ${delay}ms")
@@ -1136,10 +1167,7 @@ class MainActivity : AppCompatActivity() {
             countdownRunnable = object : Runnable {
                 override fun run() {
                     val left = releaseMs - nowC()
-                    if (!prewarmed && left in 15_000..60_000) {
-                        prewarmed = true
-                        prewarmSessions()
-                    }
+                    preReleaseSteps(left)
                     if (left <= 300) {
                         ui.postDelayed(fireRunnable!!, left.coerceAtLeast(0))
                     } else {
@@ -1155,12 +1183,41 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** ~T-60s: load the services list in every session (warm) and verify we're still logged in. */
-    private fun prewarmSessions() {
-        log("PREWARM: loading services list in ${sessions.size} session(s); checking login")
-        refreshNtp()
-        sessionCheckPending = true
-        sessions.forEach { it.web.loadUrl(prefs.serviceUrl) }
+    /**
+     * Pre-release steps, each done ONCE per release (tracked process-wide, so returning to the app
+     * or a recreated activity can't repeat them — v14 re-ran the pre-warm on every resume and kept
+     * navigating away from the login page, 25 Nov):
+     *  - T-10min, T-5min: keep-alive reload of the services list (idle sessions expire; 25 Nov the
+     *    16:13 login had expired by 16:59);
+     *  - T-3min: session check -> alarm "log in now" while there is still time;
+     *  - T-20s: fresh services list in every session.
+     * Never navigates a session that is on the iam.esteri.it login flow.
+     */
+    private fun preReleaseSteps(left: Long) {
+        fun once(key: String, from: Long, to: Long, action: () -> Unit) {
+            if (left in to..from && PreRelease.done.add("$releaseMs/$key")) action()
+        }
+        once("keepalive10", 600_000, 300_001) { reloadServices("keep-alive T-10min", check = false) }
+        once("keepalive5", 300_000, 180_001) { reloadServices("keep-alive T-5min", check = false) }
+        once("check", 180_000, 20_001) { refreshNtp(); reloadServices("session check T-3min", check = true) }
+        once("prewarm", 20_000, 3_000) { reloadServices("pre-warm T-20s", check = true) }
+    }
+
+    private fun reloadServices(why: String, check: Boolean) {
+        var loaded = 0
+        sessions.forEach { s ->
+            val cur = s.web.url ?: ""
+            when {
+                cur.contains("iam.esteri.it", true) -> log("$why: session ${s.index} is on the login page — not navigating")
+                cur.contains("/Services/Booking/", true) || cur.contains("/BookingCalendar", true) ->
+                    log("$why: session ${s.index} is mid-booking — not navigating")
+                else -> {
+                    if (check && s.index == 0) sessionCheckPending = true
+                    s.web.loadUrl(prefs.serviceUrl); loaded++
+                }
+            }
+        }
+        log("PRE-RELEASE $why: reloaded $loaded/${sessions.size} session(s)")
     }
 
     private fun cancelCountdown() {

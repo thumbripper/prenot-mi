@@ -62,7 +62,7 @@ object Js {
         (function(){
           try{
             var body=((document.body?document.body.innerText:'')+'').toLowerCase();
-            var keys=['all appointments for this service','currently unavailable','sold out','high demand',
+            var keys=['all appointments for this service','currently booked','currently unavailable','sold out','high demand',
                       'esaurit','elevata richiesta','tutti gli appuntamenti','al momento non'];
             for(var i=0;i<keys.length;i++){ var k=body.indexOf(keys[i]);
               if(k>=0) return 'SOLD|'+body.substring(Math.max(0,k-80),k+200).replace(/\s+/g,' '); }
@@ -236,7 +236,7 @@ object Js {
     val MODALS = """
         (function(){
           try{ $HELPERS
-            var ms=document.querySelectorAll('.modal.in,.modal.show,.swal2-popup,.sweet-alert,.ui-dialog,[role=alertdialog],.alert');
+            var ms=document.querySelectorAll('.jconfirm-box,.app-modal,.modal.in,.modal.show,.swal2-popup,.sweet-alert,.ui-dialog,[role=alertdialog],.alert');
             var out=[]; for(var i=0;i<ms.length;i++){ if(!__vis(ms[i])) continue;
               var t=(ms[i].innerText||'').replace(/\s+/g,' ').trim(); if(t) out.push(t.substring(0,400)); }
             return JSON.stringify(out);
@@ -248,7 +248,7 @@ object Js {
     val CONFIRM_MODAL = """
         (function(){
           try{ $HELPERS
-            var ms=document.querySelectorAll('.modal.in,.modal.show,.swal2-popup,.sweet-alert,.ui-dialog,[role=alertdialog]');
+            var ms=document.querySelectorAll('.jconfirm-box,.app-modal,.modal.in,.modal.show,.swal2-popup,.sweet-alert,.ui-dialog,[role=alertdialog]');
             var ok=['OK','CONFERMA','CONFIRM','SI','SÌ','YES','PROSEGUI','CONTINUA','CONTINUE','AVANTI','FORWARD','PRENOTA','BOOK'];
             for(var i=0;i<ms.length;i++){ if(!__vis(ms[i])) continue;
               var bs=ms[i].querySelectorAll('button,a,input[type=submit],input[type=button]');
@@ -345,7 +345,7 @@ object Js {
             }
             var last='';
             setInterval(function(){ try{
-              var ms=document.querySelectorAll('.modal.in,.modal.show,.swal2-popup,.sweet-alert,.ui-dialog,[role=alertdialog]'), out=[];
+              var ms=document.querySelectorAll('.jconfirm-box,.app-modal,.modal.in,.modal.show,.swal2-popup,.sweet-alert,.ui-dialog,[role=alertdialog]'), out=[];
               for(var i=0;i<ms.length;i++){ var st=getComputedStyle(ms[i]);
                 if(st.display==='none'||st.visibility==='hidden'||st.opacity==='0') continue;
                 var t=(ms[i].innerText||'').replace(/\s+/g,' ').trim(); if(t) out.push(t.substring(0,400)); }

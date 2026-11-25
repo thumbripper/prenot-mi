@@ -117,6 +117,54 @@ before the real table exists. Fixes:
 Note that both sessions share one server session (one cookie jar), so the second session adds
 little and can interfere. Consider defaulting to **1** session until the cookies are separated.
 
+## 25 Nov 17:00 live run (v14): re-login loop, then too late
+
+Evidence: `evidence_20261125_1`. Timeline (T = 17:00:00 London):
+
+| Time | What happened |
+|---|---|
+| 16:13 | Logged in, services list OK. App left idle until 16:59. |
+| T-60s | Pre-warm loaded `/Services` and got `/Home?ReturnUrl=%2fServices` (the session had **expired while idle**). Alarm "log in now". |
+| T-55s ... T-10s | **Re-login loop.** User taps LOGIN and goes to `iam.esteri.it`; the activity pauses and resumes (keyboard or password manager). v14 reset `prewarmed=false` in `maybeStartCountdown()` on every resume, so each resume re-ran the pre-warm, which navigated **away from the login page** back to `/Home?ReturnUrl` and sounded the alarm again. This happened 6 times. The notification created instance #3, but the loop carried on. It stopped only once the countdown passed T-15s. |
+| T-5s | User finished logging in by hand (`/UserArea`, then `/Services`). |
+| T+18ms | BOOK clicked. `/Services/Booking/422` -> **`/UserArea`** (twice). No popup, so v14 waited out the timeout. |
+| T+6.8s | `wave 1 -> TIMEOUT` (**7s lost**). |
+| T+8.4s | Wave 2: booking page. SEND NEW CODE at T+8.5s. |
+| T+13.0s | OTP arrived by email (4.5s); filled; JS confirm accepted; FORWARD at T+13.2s. |
+| T+14.2s | **Bounced to `/Services` with "All appointments for this service are currently booked."** |
+
+Conclusions:
+1. The re-login loop was an app bug: the pre-warm was not "once per release".
+2. The session expires in well under 45 min idle. A keep-alive is needed, and the login check
+   should come early enough to log in calmly.
+3. The bounce after FORWARD is the sold-out popup, i.e. we were too late. Without the 7s redirect
+   timeout, FORWARD would have been at about T+6s.
+
+### v15 changes
+- Pre-release steps run **once per release, process-wide** (`PreRelease.done`), so resuming or
+  recreating the activity can't repeat them:
+  - keep-alive reloads of the services list at T-10 and T-5 min;
+  - session check at T-3 min (was T-60s);
+  - fresh pre-warm at T-20s.
+- These steps **never navigate a session that is on `iam.esteri.it`** or mid-booking.
+- After an expiry warning, a finished login (`/UserArea`) is moved on to the services list
+  automatically.
+- Logged-out detection also matches `/Home...` and `/Account/Login`.
+- During the snipe, a page outside `/Services` after the click is decided at once: `LOGGED_OUT` stops
+  with a login alarm; otherwise `REDIRECT` retries after 200ms instead of a 7s timeout.
+- The sold-out key now includes `currently booked`. The modal selectors include `.jconfirm-box` and
+  `.app-modal`, so the bounce popup is logged as `MODAL`.
+- Mock: `services.html?reset=<token>&sold=N&redir=N` (`redir` simulates the 25 Nov `/UserArea`
+  redirect; the reset is one-shot per token because retries reload the same URL).
+  `mock/UserArea.html` was added.
+- Emulator: the full flow passed (REDIRECT, then SOLD_OUT, then booked). A scheduled run, with the app
+  left and resumed twice after the T-3 min check, ran each pre-release step exactly once and fired
+  on time.
+
+### Advice for the next run
+Log in **5-10 minutes before release** and leave the app in the foreground. The keep-alive keeps the
+session warm. If the T-3 min alarm sounds, log in: the app no longer interferes.
+
 ## v14 status
 
 Everything below and in the review addendum is implemented in v14 (25 Nov) and passes the

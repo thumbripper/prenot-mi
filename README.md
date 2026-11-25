@@ -9,9 +9,24 @@ then on, with the default settings, it clicks BOOK, requests and fills the OTP, 
 free date and time slot on the calendar. Every attempt is logged with timestamps and screenshots as
 evidence that booking was impossible (for a "denial of justice" court filing).
 
-**Current version: v14** (see *What's new in v14* below). Status, known problems and the next steps are in
+**Current version: v15** (see *What's new in v15* below). Status, known problems and the next steps are in
 [`docs/evidence-analysis-2026-11.md`](docs/evidence-analysis-2026-11.md). What we know about the
 site's pages and DOM is in [`docs/site-notes.md`](docs/site-notes.md).
+
+## What's new in v15
+
+Fixes from the 25 Nov live run (see the analysis doc):
+- **No more re-login loop.**
+  - Pre-release steps run once per release:
+    - keep-alive at T-10 and T-5 min;
+    - login check at T-3 min;
+    - pre-warm at T-20s.
+  - They never navigate away from the login page.
+  - After you log in, the app opens the services list itself.
+- **No 7s stall on a redirect.** If BOOK lands on `/UserArea` (or anywhere else), the app retries after
+  200ms. If it lands on a logged-out page, the app stops and sounds the login alarm.
+- The sold-out popup is a jquery-confirm box ("...currently booked."). It is now recognised and logged.
+  A bounce to `/Services` after FORWARD means the slots went while the OTP arrived.
 
 ## What's new in v14
 
@@ -29,7 +44,7 @@ site's pages and DOM is in [`docs/site-notes.md`](docs/site-notes.md).
   - One snipe and one OTP request per process.
   - `onDestroy` cleanup and wider `configChanges`, which fixes the duplicate snipes behind the 9 Nov
     "Incorrect Code!".
-  - At T-60s every session is pre-warmed and the login is checked (alarm if logged out).
+  - Pre-warm and login check before release (v15: T-10/T-5 min keep-alive, T-3 min check, T-20s pre-warm).
   - The screen stays on near release; a WebView renderer crash is recovered; a 5xx page is never
     counted as SUCCESS.
 - **Telling you.** An alarm-stream sound plays when the calendar loads, a free slot is seen, after
@@ -93,7 +108,7 @@ site's pages and DOM is in [`docs/site-notes.md`](docs/site-notes.md).
 Defaults: 1 session, 40 waves, 400 ms interval, 3 min pre-warn, Mon+Wed 17:00, everything on
 except Armed (the alarm sound and network capture are on too).
 
-Release-day checklist: log in about 5 min before; set parallel sessions to 1; make sure notification
+Release-day checklist: log in 5-10 min before; set parallel sessions to 1; make sure notification
 access is on and alarm volume is up; keep the app in the foreground.
 
 Testing offline: see *Emulator testing* below.
@@ -124,8 +139,9 @@ SDK adb `%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe`.
    `adb shell cmd notification allow_listener com.szurgot.prenotasniper.debug/com.szurgot.prenotasniper.OtpListenerService`
 2. Set the target: push a `shared_prefs/prenota.xml` with `bookingId=/Services/Booking/101` (via
    `run-as`), or long-press SNIPE on the mock page.
-3. Start the app on `file:///android_asset/mock/services.html?reset=1&sold=2` (the citizenship row is
-   sold out for the first 2 clicks) and tap SNIPE NOW. Or start it on
+3. Start the app on `file:///android_asset/mock/services.html?reset=<new token>&sold=2` (the
+   citizenship row is sold out for the first 2 clicks; add `&redir=1` to send the first click to
+   `/UserArea`, as seen live on 25 Nov) and tap SNIPE NOW. Or start it on
    `file:///android_asset/mock/BookingCalendar.html` to test auto-book on its own.
 4. Inject the OTP: `adb shell "cmd notification post -t 'Prenot@mi' tag1 'Your OTP Code:123456'"`.
 5. Read `/sdcard/Android/data/com.szurgot.prenotasniper.debug/files/evidence/log.txt`.
@@ -139,7 +155,7 @@ ahead (Europe/London) into the prefs.
 
 On the phone: `Android/data/com.szurgot.prenotasniper.debug/files/evidence/`. Copies are kept in
 `G:\My Drive\italian_citizenship\app\evidence_YYYYMMDD\`. The latest is
-`evidence_20261125` (v13, 14 Oct – 23 Nov 2026). Screenshot names are
+`evidence_20261125_1` (v14, 25 Nov live run); `evidence_20261125` has v13 runs, 14 Oct – 23 Nov 2026. Screenshot names are
 `yyyyMMdd_HHmmss_SSS_<tag>.png`, with tags `waveN_SOLD_OUT`, `waveN_NO_SERVI`, `SUCCESS`, `calendar`,
 `cal_mN`, `calendar_noavail`, `BOOKED`.
 
@@ -149,7 +165,6 @@ On the phone: `Android/data/com.szurgot.prenotasniper.debug/files/evidence/`. Co
 
 Still unknown about the live site (v14 captures them; see `docs/evidence-analysis-2026-11.md`):
 - the BOOK button's real markup and what follows it (confirm, modal, extra OTP, final URL);
-- why FORWARD sometimes returns to `/Services`;
 - the calendar AJAX endpoint;
 - the full sold-out text in Italian.
 

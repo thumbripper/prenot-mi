@@ -21,7 +21,7 @@
 <body>
   <!-- Mock of the real services list. The citizenship row is "sold out" for the first
        N clicks (localStorage counter, default 2; ?sold=N to change), then opens the booking
-       page. Reset the counter with ?reset=1. -->
+       page. ?redir=N first sends N clicks to UserArea.html (seen live on 25 Nov). Reset the counter with ?reset=<new token>. -->
   <h2>Services provided by the Embassy/Consulate (MOCK)</h2>
   <table>
     <tr><th>Type</th><th>Service</th><th>Description</th><th>Booking</th></tr>
@@ -35,21 +35,27 @@
     </tr>
   </table>
 
-  <div id="modal">
+  <div id="modal" class="jconfirm-box">
     <p>All appointments for this service are currently booked. New appointments will be released soon.</p>
     <button class="confirm" onclick="document.getElementById('modal').style.display='none'">OK</button>
   </div>
 
 <script>
   var qs = new URLSearchParams(location.search);
-  if (qs.get('reset')) localStorage.removeItem('mockClicks');
-  if (qs.get('sold')) localStorage.setItem('mockSold', qs.get('sold'));
+  // ?reset=<token> resets once per token (retry waves reload the same URL).
+  if (qs.get('reset') && localStorage.getItem('mockResetTok') !== qs.get('reset')) {
+    localStorage.setItem('mockResetTok', qs.get('reset'));
+    localStorage.removeItem('mockClicks');
+    localStorage.setItem('mockSold', qs.get('sold')||2);
+    localStorage.setItem('mockRedir', qs.get('redir')||0);
+  }
   function showSold(){ document.getElementById('modal').style.display='block'; }
   function book(){
     var n = +(localStorage.getItem('mockClicks')||0) + 1;
     localStorage.setItem('mockClicks', n);
-    var sold = +(localStorage.getItem('mockSold')||2);
-    if (n <= sold) showSold(); else location.href = 'Services/Booking/101.html';
+    var sold = +(localStorage.getItem('mockSold')||2), redir = +(localStorage.getItem('mockRedir')||0);
+    if (n <= redir) { location.href = 'UserArea.html'; return; }   // like 25 Nov: click -> /UserArea
+    if (n <= sold + redir) showSold(); else location.href = 'Services/Booking/101.html';
   }
 </script>
 </body>
